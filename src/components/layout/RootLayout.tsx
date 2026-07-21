@@ -17,7 +17,7 @@ export function RootLayout() {
           <ThemeToggle />
         </header>
 
-        <main className="flex-1 px-5 pb-28 md:px-8 md:pb-8 animate-fade-in">
+        <main className="flex flex-1 flex-col px-5 pb-28 md:px-8 md:pb-8 animate-fade-in">
           <Outlet />
         </main>
       </div>

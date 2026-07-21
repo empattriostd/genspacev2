@@ -1,5 +1,5 @@
 import { useRef, useState, Fragment, type DragEvent } from 'react';
-import { Stage, Layer, Rect, Text } from 'react-konva';
+import { Stage, Layer, Rect, Text, Line } from 'react-konva';
 import type Konva from 'konva';
 import { useLadderEditorStore } from '@/stores/ladderEditorStore';
 import { usePlcStore } from '@/stores/plcStore';
@@ -8,12 +8,23 @@ import { PropertyDialog } from './PropertyDialog';
 import { ConnectionLine } from './ConnectionLine';
 import { GridBackground } from './GridBackground';
 import { DRAG_MIME, specForDragKind, addressTypeForDragKind } from './ComponentPalette';
-import { gridToWorld, worldToGrid, worldToGridForRung } from '../utils/coords';
+import { gridToWorld, worldToGrid, worldToGridForRung, rightRailWorldX } from '../utils/coords';
 import { nextAvailableAddress } from '../utils/addressAllocation';
 import { findElementRungId, findElement } from '../utils/findElement';
 import { collectElementsInRect, type WorldRect } from '../utils/selection';
 import { useElementSize } from '../utils/useElementSize';
-import { COLOR_SELECTED, MIN_SCALE, MAX_SCALE, ZOOM_SCALE_BY, RUNG_HEIGHT } from '../constants';
+import {
+  COLOR_SELECTED,
+  COLOR_POWER_ON,
+  COLOR_RAIL,
+  MIN_SCALE,
+  MAX_SCALE,
+  ZOOM_SCALE_BY,
+  RUNG_HEIGHT,
+  LEFT_RAIL_X,
+  GRID_SIZE,
+} from '../constants';
+import type { LadderElement } from '@/simulator/types/ladder';
 
 interface CameraState {
   x: number;
@@ -29,10 +40,17 @@ interface LadderCanvasProps {
 }
 
 /**
- * The Stage/Layer orchestrator: owns the camera (pan/zoom), the marquee
- * selection gesture, and the two-click flow for Connect/Branch modes.
- * Every actual document mutation goes through useLadderEditorStore's
- * existing actions — this component never touches EditorDocument directly.
+ * The Konva Stage orchestrator for the CX-Programmer-style editor.
+ *
+ * Key Phase 6 changes:
+ * - Auto-wire: dropping a component auto-connects it to the previous
+ *   element in the rung. No manual wire drawing needed for series logic.
+ * - Rail wires: visual wires from the left rail to start elements and from
+ *   end elements to the right rail, drawn every frame from the data model.
+ * - Click-to-place: when a palette tool is active, clicking the canvas
+ *   places the component at the clicked grid position.
+ * - Branch tool: two-click flow creates parallel paths with auto-wired
+ *   vertical and horizontal connections.
  */
 export function LadderCanvas({ interactionMode, isSimulating, onAnchorActionDone, onError }: LadderCanvasProps) {
   const { ref: containerRef, size } = useElementSize<HTMLDivElement>();
@@ -54,7 +72,7 @@ export function LadderCanvas({ interactionMode, isSimulating, onAnchorActionDone
   const poweredElements = usePlcStore((s) => s.poweredElements);
   const setInput = usePlcStore((s) => s.setInput);
 
-  const [camera, setCamera] = useState<CameraState>({ x: 80, y: 40, scale: 1 });
+  const [camera, setCamera] = useState<CameraState>({ x: 20, y: 20, scale: 1 });
   const [pendingAnchorId, setPendingAnchorId] = useState<string | null>(null);
   const [multiSelected, setMultiSelected] = useState<Set<string>>(new Set());
   const [marqueeRect, setMarqueeRect] = useState<WorldRect | null>(null);
@@ -63,7 +81,7 @@ export function LadderCanvas({ interactionMode, isSimulating, onAnchorActionDone
   const marqueeGesture = useRef<{ active: boolean; startX: number; startY: number } | null>(null);
   const panGesture = useRef<{ active: boolean; startScreenX: number; startScreenY: number; startCameraX: number; startCameraY: number; moved: boolean } | null>(null);
 
-  // ── 8. Zoom ────────────────────────────────────────────────────────────
+  // ── Zoom ────────────────────────────────────────────────────────────
   function handleWheel(e: Konva.KonvaEventObject<WheelEvent>) {
     e.evt.preventDefault();
     const stage = stageRef.current;
@@ -90,15 +108,10 @@ export function LadderCanvas({ interactionMode, isSimulating, onAnchorActionDone
     });
   }
 
-  // ── 9. Pan + 10. Selection Box ──────────────────────────────────────────
-  // Both gestures start from a mousedown on empty canvas (never on an
-  // element — those are handled by ElementNode's own onClick/onDrag).
-  // Plain drag = pan. Shift+drag = marquee-select. A drag that barely moves
-  // is treated as a plain click that clears selection.
+  // ── Pan + Marquee Selection ──────────────────────────────────────────
   function handleStageMouseDown(e: Konva.KonvaEventObject<MouseEvent>) {
     const stage = stageRef.current;
     if (!stage || e.target !== stage) return;
-
     const worldPos = stage.getRelativePointerPosition();
     if (!worldPos) return;
 
@@ -167,7 +180,36 @@ export function LadderCanvas({ interactionMode, isSimulating, onAnchorActionDone
     }
   }
 
-  // ── 3. Palette Drag & Drop ──────────────────────────────────────────────
+  // ── Auto-wire helper ─────────────────────────────────────────────────
+  /** Finds the rightmost element in a rung that has no outgoing connections
+   * (i.e. the current "end" of the series chain) so a newly dropped element
+   * can be auto-wired after it. Returns null if the rung is empty. */
+  function findChainEnd(rungId: string, excludeId?: string): string | null {
+    const rung = document.rungs[rungId];
+    if (!rung) return null;
+    let rightmost: LadderElement | null = null;
+    for (const id of rung.elementOrder) {
+      if (id === excludeId) continue;
+      const el = rung.elements[id];
+      if (el.kind === 'COMMENT' || el.kind === 'BRANCH_START' || el.kind === 'BRANCH_END') continue;
+      if ((el.connectsTo ?? []).length === 0) {
+        if (!rightmost || el.gridX > rightmost.gridX) rightmost = el;
+      }
+    }
+    return rightmost?.id ?? null;
+  }
+
+  /** Adds a component AND auto-wires it to the chain end of the rung. */
+  function addComponentWithAutoWire(rungId: string, spec: Parameters<typeof addComponent>[1]) {
+    const newEl = addComponent(rungId, spec);
+    if (!newEl) return;
+    const chainEndId = findChainEnd(rungId, newEl.id);
+    if (chainEndId) {
+      connect(rungId, chainEndId, newEl.id);
+    }
+  }
+
+  // ── Palette Drag & Drop ──────────────────────────────────────────────
   function handleDropFromPalette(e: DragEvent<HTMLDivElement>) {
     e.preventDefault();
     const dragKind = e.dataTransfer.getData(DRAG_MIME);
@@ -186,11 +228,11 @@ export function LadderCanvas({ interactionMode, isSimulating, onAnchorActionDone
 
     const addressType = addressTypeForDragKind(dragKind);
     const address = addressType ? { type: addressType, number: nextAvailableAddress(document, addressType) } : undefined;
-    const spec = specForDragKind(dragKind, address, { gridX, gridY });
-    if (spec) addComponent(rungId, spec);
+    const spec = specForDragKind(dragKind, address, { gridX: Math.max(0, gridX), gridY });
+    if (spec) addComponentWithAutoWire(rungId, spec);
   }
 
-  // ── 5. Drag Element (existing elements) ─────────────────────────────────
+  // ── Drag existing elements ────────────────────────────────────────────
   function handleElementDragStart(elementId: string) {
     const rungId = findElementRungId(document, elementId);
     if (rungId) beginDrag(rungId, elementId);
@@ -213,16 +255,14 @@ export function LadderCanvas({ interactionMode, isSimulating, onAnchorActionDone
     endDrag(true);
   }
 
-  // ── 6. Connect Elements + 7. Branch Visual Editor (both are a two-click
-  // "pick anchor A, then anchor B" flow; which store action fires depends
-  // on `interactionMode`) ──────────────────────────────────────────────────
+  // ── Connect / Branch two-click flow ──────────────────────────────────
   function handleAnchorClick(elementId: string) {
     if (!pendingAnchorId) {
       setPendingAnchorId(elementId);
       return;
     }
     if (pendingAnchorId === elementId) {
-      setPendingAnchorId(null); // clicking the same element again cancels
+      setPendingAnchorId(null);
       return;
     }
 
@@ -240,7 +280,7 @@ export function LadderCanvas({ interactionMode, isSimulating, onAnchorActionDone
       const a = findElement(document, pendingAnchorId);
       const b = findElement(document, elementId);
       const midGridX = a && b ? Math.round((a.gridX + b.gridX) / 2) : 0;
-      const midGridY = a ? a.gridY + 1 : 1; // one row below the main line
+      const midGridY = a ? a.gridY + 1 : 1;
       branch(rungA, pendingAnchorId, elementId, { gridX: midGridX, gridY: midGridY });
     }
 
@@ -248,7 +288,7 @@ export function LadderCanvas({ interactionMode, isSimulating, onAnchorActionDone
     onAnchorActionDone?.();
   }
 
-  // ── Selection / Highlight Active Path ────────────────────────────────────
+  // ── Selection / input toggle in sim mode ──────────────────────────────
   function handleSelectElement(elementId: string) {
     if (isSimulating) {
       const el = findElement(document, elementId);
@@ -262,10 +302,35 @@ export function LadderCanvas({ interactionMode, isSimulating, onAnchorActionDone
     setMultiSelected(new Set([elementId]));
   }
 
+  // ── Rail wire computation ─────────────────────────────────────────────
+  /** Returns element ids that are "start" elements (no predecessors → wired
+   * to the left rail) and "end" elements (no successors → wired to right
+   * rail) for a given rung. */
+  function getRailConnections(rungId: string): { starts: LadderElement[]; ends: LadderElement[] } {
+    const rung = document.rungs[rungId];
+    if (!rung) return { starts: [], ends: [] };
+
+    const hasPredecessor = new Set<string>();
+    for (const id of rung.elementOrder) {
+      const el = rung.elements[id];
+      for (const target of el.connectsTo ?? []) hasPredecessor.add(target);
+    }
+
+    const starts: LadderElement[] = [];
+    const ends: LadderElement[] = [];
+    for (const id of rung.elementOrder) {
+      const el = rung.elements[id];
+      if (el.kind === 'COMMENT') continue;
+      if (!hasPredecessor.has(id)) starts.push(el);
+      if ((el.connectsTo ?? []).length === 0) ends.push(el);
+    }
+    return { starts, ends };
+  }
+
   return (
     <div
       ref={containerRef}
-      className="relative h-full w-full overflow-hidden rounded-3xl"
+      className="relative h-full w-full overflow-hidden rounded-2xl bg-white dark:bg-gray-950"
       onDragOver={(e) => e.preventDefault()}
       onDrop={handleDropFromPalette}
     >
@@ -283,21 +348,63 @@ export function LadderCanvas({ interactionMode, isSimulating, onAnchorActionDone
         onMouseUp={handleStageMouseUp}
       >
         <Layer>
-          <GridBackground camera={camera} stageWidth={size.width} stageHeight={size.height} />
+          <GridBackground camera={camera} stageWidth={size.width} stageHeight={size.height} rungCount={document.rungOrder.length} />
 
           {document.rungOrder.map((rungId, rungIndex) => {
             const rung = document.rungs[rungId];
+            const { starts, ends } = getRailConnections(rungId);
+            const railY = rungIndex * RUNG_HEIGHT + RUNG_HEIGHT / 2;
+            const rightX = rightRailWorldX();
+
             return (
               <Fragment key={rungId}>
+                {/* Rung number label */}
                 <Text
-                  text={`Rung ${rungIndex + 1}`}
-                  x={-30}
-                  y={rungIndex * RUNG_HEIGHT + 12}
-                  fontSize={11}
+                  text={`${rungIndex + 1}`}
+                  x={LEFT_RAIL_X - 28}
+                  y={railY - 7}
+                  fontSize={12}
+                  fontStyle="bold"
                   fill="#9A9A9A"
                 />
 
-                {/* Connection lines first, so element glyphs draw on top */}
+                {/* Left rail → start elements wires */}
+                {starts.map((el) => {
+                  const pos = gridToWorld(el.gridX, el.gridY, rungIndex);
+                  const isPowered = isSimulating && !!poweredElements[el.id];
+                  return (
+                    <Line
+                      key={`rail-l-${el.id}`}
+                      points={[LEFT_RAIL_X, railY, pos.x - GRID_SIZE / 2, pos.y]}
+                      stroke={isPowered ? COLOR_POWER_ON : COLOR_RAIL}
+                      strokeWidth={isPowered ? 3 : 2.5}
+                      lineCap="round"
+                      shadowColor={isPowered ? COLOR_POWER_ON : undefined}
+                      shadowBlur={isPowered ? 6 : 0}
+                      shadowOpacity={isPowered ? 0.5 : 0}
+                    />
+                  );
+                })}
+
+                {/* End elements → right rail wires */}
+                {ends.map((el) => {
+                  const pos = gridToWorld(el.gridX, el.gridY, rungIndex);
+                  const isPowered = isSimulating && !!poweredElements[el.id];
+                  return (
+                    <Line
+                      key={`rail-r-${el.id}`}
+                      points={[pos.x + GRID_SIZE / 2, pos.y, rightX, railY]}
+                      stroke={isPowered ? COLOR_POWER_ON : COLOR_RAIL}
+                      strokeWidth={isPowered ? 3 : 2.5}
+                      lineCap="round"
+                      shadowColor={isPowered ? COLOR_POWER_ON : undefined}
+                      shadowBlur={isPowered ? 6 : 0}
+                      shadowOpacity={isPowered ? 0.5 : 0}
+                    />
+                  );
+                })}
+
+                {/* Element-to-element connection wires */}
                 {rung.elementOrder.map((id) => {
                   const el = rung.elements[id];
                   const fromPos = gridToWorld(el.gridX, el.gridY, rungIndex);
@@ -316,6 +423,7 @@ export function LadderCanvas({ interactionMode, isSimulating, onAnchorActionDone
                   });
                 })}
 
+                {/* Element glyphs */}
                 {rung.elementOrder.map((id) => {
                   const el = rung.elements[id];
                   const pos = gridToWorld(el.gridX, el.gridY, rungIndex);

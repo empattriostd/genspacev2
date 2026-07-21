@@ -1,7 +1,18 @@
 import { Group, Line, Circle, Rect, Text } from 'react-konva';
 import type Konva from 'konva';
 import type { LadderElement } from '@/simulator/types/ladder';
-import { COLOR_POWER_ON, COLOR_INACTIVE, COLOR_SELECTED, GRID_SIZE } from '../constants';
+import {
+  COLOR_POWER_ON,
+  COLOR_INACTIVE,
+  COLOR_SELECTED,
+  COLOR_WIRE,
+  GRID_SIZE,
+  CONTACT_WIDTH,
+  CONTACT_HEIGHT,
+  COIL_RADIUS,
+  BLOCK_WIDTH,
+  BLOCK_HEIGHT,
+} from '../constants';
 
 export type InteractionMode = 'select' | 'connect' | 'branch';
 
@@ -18,15 +29,14 @@ interface ElementNodeProps {
   onDragStart: (id: string) => void;
   onDragMove: (id: string, worldX: number, worldY: number) => void;
   onDragEnd: (id: string, worldX: number, worldY: number) => void;
-  /** Phase 5: opens the Address/Comment/Alias dialog. */
   onOpenProperties: (id: string) => void;
 }
 
-/** Renders one LadderElement as IEC-style ladder symbols — the same visual
- * language as the Phase-1 static mock, now real Konva shapes driven by
- * live element data + simulation power state instead of decoration.
- * Phase 5: power color is green (COLOR_POWER_ON) to match CX-Programmer's
- * live-monitor convention, and double-click opens the property dialog. */
+/**
+ * Renders one LadderElement as IEC-style ladder symbols — enlarged for
+ * CX-Programmer-grade readability. Power state (green) comes directly from
+ * the Runtime's poweredElements set; this component never fakes it.
+ */
 export function ElementNode({
   element,
   x,
@@ -43,6 +53,7 @@ export function ElementNode({
   onOpenProperties,
 }: ElementNodeProps) {
   const color = isPowered ? COLOR_POWER_ON : COLOR_INACTIVE;
+  const wireColor = isPowered ? COLOR_POWER_ON : COLOR_WIRE;
   const draggable = interactionMode === 'select';
 
   const handleClick = () => {
@@ -73,32 +84,32 @@ export function ElementNode({
     >
       {(isSelected || isPendingAnchor) && (
         <Rect
-          x={-30}
-          y={-24}
-          width={60}
-          height={48}
-          cornerRadius={10}
+          x={-55}
+          y={-40}
+          width={110}
+          height={80}
+          cornerRadius={8}
           stroke={COLOR_SELECTED}
           strokeWidth={1.5}
-          dash={[4, 3]}
+          dash={[5, 3]}
         />
       )}
 
-      <ElementGlyph element={element} color={color} />
+      <ElementGlyph element={element} color={color} wireColor={wireColor} />
 
       <Text
         text={addressLabel(element)}
-        x={-30}
-        y={-38}
-        width={60}
+        x={-55}
+        y={-52}
+        width={110}
         align="center"
-        fontSize={11}
+        fontSize={13}
         fontStyle="bold"
         fill={color}
       />
 
       {element.alias && (
-        <Text text={element.alias} x={-30} y={20} width={60} align="center" fontSize={9} fill="#9A9A9A" />
+        <Text text={element.alias} x={-55} y={28} width={110} align="center" fontSize={10} fill="#9A9A9A" />
       )}
     </Group>
   );
@@ -110,25 +121,42 @@ function addressLabel(element: LadderElement): string {
   return `${element.address.type}${element.address.number}`;
 }
 
-function ElementGlyph({ element, color }: { element: LadderElement; color: string }) {
-  const stroke = { stroke: color, strokeWidth: 2 };
+function ElementGlyph({
+  element,
+  color,
+  wireColor,
+}: {
+  element: LadderElement;
+  color: string;
+  wireColor: string;
+}) {
+  const stroke = { stroke: color, strokeWidth: 2.5 };
+  const wire = { stroke: wireColor, strokeWidth: 2.5, lineCap: 'round' as const };
 
   switch (element.kind) {
     case 'CONTACT': {
       const isEdge = element.mode === 'RISING_EDGE' || element.mode === 'FALLING_EDGE';
+      const halfW = CONTACT_WIDTH / 2;
       return (
         <>
-          <Line points={[-GRID_SIZE / 2, 0, -8, 0]} {...stroke} />
-          <Line points={[8, 0, GRID_SIZE / 2, 0]} {...stroke} />
-          <Line points={[-8, -14, -8, 14]} {...stroke} />
-          <Line points={[8, -14, 8, 14]} {...stroke} />
-          {element.mode === 'NC' && <Line points={[-9, 13, 9, -13]} {...stroke} />}
+          {/* Left wire stub to rail/previous element */}
+          <Line points={[-GRID_SIZE / 2, 0, -halfW, 0]} {...wire} />
+          {/* Right wire stub to next element */}
+          <Line points={[halfW, 0, GRID_SIZE / 2, 0]} {...wire} />
+          {/* Contact vertical bars */}
+          <Line points={[-halfW, -CONTACT_HEIGHT / 2, -halfW, CONTACT_HEIGHT / 2]} {...stroke} />
+          <Line points={[halfW, -CONTACT_HEIGHT / 2, halfW, CONTACT_HEIGHT / 2]} {...stroke} />
+          {/* NC diagonal slash */}
+          {element.mode === 'NC' && <Line points={[-halfW + 2, CONTACT_HEIGHT / 2 - 2, halfW - 2, -CONTACT_HEIGHT / 2 + 2]} {...stroke} />}
+          {/* Edge arrow */}
           {isEdge && (
             <Text
               text={element.mode === 'RISING_EDGE' ? '↑' : '↓'}
-              x={-5}
-              y={-32}
-              fontSize={14}
+              x={-8}
+              y={-42}
+              width={16}
+              align="center"
+              fontSize={16}
               fontStyle="bold"
               fill={color}
             />
@@ -138,13 +166,26 @@ function ElementGlyph({ element, color }: { element: LadderElement; color: strin
     }
     case 'COIL': {
       const modeMark = element.coilMode === 'SET' ? 'S' : element.coilMode === 'RESET' ? 'R' : null;
+      const hasInstruction = !!element.instruction;
       return (
         <>
-          <Line points={[-GRID_SIZE / 2, 0, -16, 0]} {...stroke} />
-          <Line points={[16, 0, GRID_SIZE / 2, 0]} {...stroke} />
-          <Circle radius={16} {...stroke} />
+          <Line points={[-GRID_SIZE / 2, 0, -COIL_RADIUS, 0]} {...wire} />
+          <Line points={[COIL_RADIUS, 0, GRID_SIZE / 2, 0]} {...wire} />
+          <Circle radius={COIL_RADIUS} {...stroke} fill="rgba(0,0,0,0.05)" />
           {modeMark && (
-            <Text text={modeMark} x={-5} y={-6} fontSize={13} fontStyle="bold" fill={color} />
+            <Text text={modeMark} x={-7} y={-8} fontSize={15} fontStyle="bold" fill={color} />
+          )}
+          {hasInstruction && (
+            <Text
+              text={element.instruction!.op}
+              x={-COIL_RADIUS}
+              y={COIL_RADIUS + 4}
+              width={COIL_RADIUS * 2}
+              align="center"
+              fontSize={9}
+              fontStyle="bold"
+              fill={color}
+            />
           )}
         </>
       );
@@ -153,36 +194,53 @@ function ElementGlyph({ element, color }: { element: LadderElement; color: strin
     case 'COUNTER':
       return (
         <>
-          <Line points={[-GRID_SIZE / 2, 0, -18, 0]} {...stroke} />
-          <Line points={[18, 0, GRID_SIZE / 2, 0]} {...stroke} />
-          <Rect x={-18} y={-16} width={36} height={32} cornerRadius={4} {...stroke} />
+          <Line points={[-GRID_SIZE / 2, 0, -BLOCK_WIDTH / 2, 0]} {...wire} />
+          <Line points={[BLOCK_WIDTH / 2, 0, GRID_SIZE / 2, 0]} {...wire} />
+          <Rect
+            x={-BLOCK_WIDTH / 2}
+            y={-BLOCK_HEIGHT / 2}
+            width={BLOCK_WIDTH}
+            height={BLOCK_HEIGHT}
+            cornerRadius={6}
+            {...stroke}
+            fill="rgba(0,0,0,0.05)"
+          />
           <Text
             text={element.kind === 'TIMER' ? element.timerType : element.counterType}
-            x={-18}
-            y={-7}
-            width={36}
+            x={-BLOCK_WIDTH / 2}
+            y={-10}
+            width={BLOCK_WIDTH}
             align="center"
-            fontSize={10}
+            fontSize={12}
             fontStyle="bold"
+            fill={color}
+          />
+          <Text
+            text={element.kind === 'TIMER' ? `${(element.presetMs / 1000).toFixed(1)}s` : `K${element.presetCount}`}
+            x={-BLOCK_WIDTH / 2}
+            y={4}
+            width={BLOCK_WIDTH}
+            align="center"
+            fontSize={9}
             fill={color}
           />
         </>
       );
     case 'WIRE':
-      return <Line points={[-GRID_SIZE / 2, 0, GRID_SIZE / 2, 0]} {...stroke} />;
+      return <Line points={[-GRID_SIZE / 2, 0, GRID_SIZE / 2, 0]} {...wire} />;
     case 'BRANCH_START':
     case 'BRANCH_END':
       return (
         <>
-          <Line points={[-GRID_SIZE / 2, 0, GRID_SIZE / 2, 0]} {...stroke} />
-          <Circle radius={4} fill={color} />
+          <Line points={[-GRID_SIZE / 2, 0, GRID_SIZE / 2, 0]} {...wire} />
+          <Circle radius={5} fill={color} />
         </>
       );
     case 'COMMENT':
       return (
         <>
-          <Rect x={-45} y={-16} width={90} height={32} cornerRadius={6} stroke="#B8B8B8" strokeWidth={1} dash={[3, 3]} />
-          <Text text={element.text} x={-42} y={-6} width={84} align="center" fontSize={10} fill="#6B6B6B" />
+          <Rect x={-55} y={-18} width={110} height={36} cornerRadius={6} stroke="#B8B8B8" strokeWidth={1} dash={[3, 3]} />
+          <Text text={element.text} x={-50} y={-6} width={100} align="center" fontSize={11} fill="#6B6B6B" />
         </>
       );
     default: {

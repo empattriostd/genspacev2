@@ -1,4 +1,4 @@
-import { GRID_SIZE, RUNG_HEIGHT, LEFT_RAIL_X } from '../constants';
+import { GRID_SIZE, RUNG_HEIGHT, LEFT_RAIL_X, RIGHT_RAIL_X } from '../constants';
 
 /** Converts an element's own (gridX, gridY) + which rung it's in, into
  * world-space pixel coordinates the Konva layer renders at scale=1.
@@ -34,4 +34,10 @@ export function worldToGridForRung(x: number, y: number, rungIndex: number): { g
     gridX: Math.round((x - LEFT_RAIL_X) / GRID_SIZE) - 1,
     gridY: Math.round(localY / (GRID_SIZE * 0.8)),
   };
+}
+
+/** Returns the world-space x position where the right power rail sits for a
+ * given rung — always at RIGHT_RAIL_X, independent of element positions. */
+export function rightRailWorldX(): number {
+  return RIGHT_RAIL_X;
 }
