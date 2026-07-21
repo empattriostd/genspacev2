@@ -1,0 +1,109 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* GENSPACE base layer — design tokens live in tailwind.config.ts; this file
+   only wires up defaults and the couple of effects (glass) reused everywhere. */
+@layer base {
+  html {
+    @apply scroll-smooth;
+  }
+
+  body {
+    @apply bg-secondary text-dark font-sans antialiased transition-colors duration-300;
+    @apply dark:bg-surface-dark dark:text-secondary;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-display;
+  }
+
+  ::selection {
+    @apply bg-primary/30;
+  }
+
+  /* Visible focus ring everywhere — accessibility floor, not optional. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-primary ring-offset-2 ring-offset-secondary dark:ring-offset-surface-dark;
+  }
+}
+
+@layer components {
+  /* Reusable glassmorphism surface — the one visual signature reused across
+     cards, modals, and the (future) toolbar. Keep this the only place that
+     defines it so the look stays consistent as features are added. */
+  .glass {
+    @apply bg-white/60 dark:bg-white/5 backdrop-blur-glass border border-border dark:border-border-dark shadow-glass;
+  }
+}
+
+/* ── Phase 6.0 — Industrial PLC IDE shell ──────────────────────────────────
+   Scoped entirely under `.plc-ide` so nothing outside the Simulator page is
+   affected. The IDE runs a single fixed dark "industrial" palette on
+   purpose — real PLC engineering software (and every modern PLC simulator
+   app) doesn't follow the light/dark toggle of the surrounding site chrome,
+   it has its own consistent workbench look regardless of OS theme. */
+.plc-ide {
+  --ide-bg: #12151a;
+  --ide-canvas: #171b21;
+  --ide-panel: #1a1e25;
+  --ide-panel-alt: #20242c;
+  --ide-border: #2b313b;
+  --ide-border-soft: #232830;
+  --ide-rail: #4d5560;
+  --ide-text: #e4e8ee;
+  --ide-text-dim: #8992a3;
+  --ide-text-faint: #5c6472;
+  --ide-accent: #f26b3a;
+  --ide-run: #22c55e;
+  --ide-stop: #ef4444;
+  --ide-warn: #f5a524;
+  --ide-info: #3b82f6;
+
+  background: var(--ide-bg);
+  color: var(--ide-text);
+  color-scheme: dark;
+}
+
+.plc-ide ::selection {
+  background: rgba(242, 107, 58, 0.35);
+}
+
+/* Thin industrial scrollbars for toolbox / panels / bottom dock. */
+.plc-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ide-rail) transparent;
+}
+.plc-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.plc-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.plc-scroll::-webkit-scrollbar-thumb {
+  background-color: var(--ide-rail);
+  border-radius: 999px;
+}
+
+/* Subtle brushed-panel texture used behind the toolbar / status bar so
+   large flat areas don't read as a plain website background. */
+.plc-panel-texture {
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0) 40%);
+}
+
+@keyframes plc-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.plc-live-dot {
+  animation: plc-blink 1.4s ease-in-out infinite;
+}
