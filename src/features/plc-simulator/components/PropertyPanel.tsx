@@ -1,25 +1,22 @@
 import { usePlcStore } from '@/stores/plcStore';
-import { useLadderEditorStore } from '@/stores/ladderEditorStore';
-import type { LadderElement } from '@/simulator/types/ladder';
+import { useGridEditorStore } from '@/stores/gridEditorStore';
+import type { GridElement } from '@/simulator/editor/gridTypes';
 import type { AddressType } from '@/simulator/types/address';
-import { findElement } from '../utils/findElement';
 
 /**
  * Right-side property inspector — CX-Programmer style. Shows Type, Address,
- * Comment, Preset, and live Current Value (from the Runtime) for the
- * currently selected element. Editing address/comment/alias commits
- * directly through the editor store; live values are read-only mirrors of
- * PlcState.
+ * Comment, Alias, Preset, and live Current Value (from the Runtime) for the
+ * currently selected element. Works with the grid-based data model.
  */
 export function PropertyPanel({ isSimulating }: { isSimulating: boolean }) {
-  const selection = useLadderEditorStore((s) => s.selection);
-  const document = useLadderEditorStore((s) => s.document);
-  const updateElement = useLadderEditorStore((s) => s.updateElement);
-  const deleteComponent = useLadderEditorStore((s) => s.deleteComponent);
-
+  const selectedRungId = useGridEditorStore((s) => s.selectedRungId);
+  const selectedElementId = useGridEditorStore((s) => s.selectedElementId);
+  const document = useGridEditorStore((s) => s.document);
+  const updateElement = useGridEditorStore((s) => s.updateElement);
+  const deleteElement = useGridEditorStore((s) => s.deleteElement);
   const plcState = usePlcStore((s) => s.state);
 
-  if (!selection) {
+  if (!selectedRungId || !selectedElementId) {
     return (
       <div className="glass flex w-56 shrink-0 flex-col rounded-2xl p-3">
         <h3 className="text-xs font-semibold text-muted-foreground">Properties</h3>
@@ -28,10 +25,10 @@ export function PropertyPanel({ isSimulating }: { isSimulating: boolean }) {
     );
   }
 
-  const el = findElement(document, selection.elementId);
+  const el = document.rungs[selectedRungId]?.elements[selectedElementId];
   if (!el) return null;
 
-  const hasAddress = 'address' in el && !!el.address;
+  const hasAddress = !!el.address;
   const allowedTypes = allowedTypesFor(el);
   const addressLocked = el.kind === 'TIMER' || el.kind === 'COUNTER';
 
@@ -40,7 +37,7 @@ export function PropertyPanel({ isSimulating }: { isSimulating: boolean }) {
       <div className="flex items-center justify-between">
         <h3 className="text-xs font-semibold text-muted-foreground">Properties</h3>
         <button
-          onClick={() => deleteComponent(selection.rungId, selection.elementId)}
+          onClick={() => deleteElement(selectedRungId, selectedElementId)}
           className="text-[11px] text-red-500 hover:text-red-600 dark:text-red-400"
           title="Delete element"
         >
@@ -60,7 +57,7 @@ export function PropertyPanel({ isSimulating }: { isSimulating: boolean }) {
               disabled={addressLocked}
               onChange={(e) => {
                 const newType = e.target.value as AddressType;
-                updateElement(selection.rungId, selection.elementId, {
+                updateElement(selectedRungId, selectedElementId, {
                   address: { type: newType, number: el.address!.number },
                 });
               }}
@@ -76,7 +73,7 @@ export function PropertyPanel({ isSimulating }: { isSimulating: boolean }) {
               max={26}
               value={el.address!.number}
               onChange={(e) =>
-                updateElement(selection.rungId, selection.elementId, {
+                updateElement(selectedRungId, selectedElementId, {
                   address: { type: el.address!.type, number: Math.min(26, Math.max(1, Number(e.target.value) || 1)) },
                 })
               }
@@ -89,7 +86,7 @@ export function PropertyPanel({ isSimulating }: { isSimulating: boolean }) {
       <Field label="Comment">
         <input
           value={el.comment ?? ''}
-          onChange={(e) => updateElement(selection.rungId, selection.elementId, { comment: e.target.value })}
+          onChange={(e) => updateElement(selectedRungId, selectedElementId, { comment: e.target.value })}
           placeholder="e.g. Start button"
           className="h-8 w-full rounded-lg border border-border bg-transparent px-2 text-xs dark:border-border-dark"
         />
@@ -98,7 +95,7 @@ export function PropertyPanel({ isSimulating }: { isSimulating: boolean }) {
       <Field label="Alias">
         <input
           value={el.alias ?? ''}
-          onChange={(e) => updateElement(selection.rungId, selection.elementId, { alias: e.target.value })}
+          onChange={(e) => updateElement(selectedRungId, selectedElementId, { alias: e.target.value })}
           placeholder="e.g. START_BTN"
           className="h-8 w-full rounded-lg border border-border bg-transparent px-2 text-xs dark:border-border-dark"
         />
@@ -110,12 +107,8 @@ export function PropertyPanel({ isSimulating }: { isSimulating: boolean }) {
             type="number"
             min={100}
             step={100}
-            value={el.presetMs}
-            onChange={(e) => {
-              const presetMs = Math.max(100, Number(e.target.value) || 100);
-              updateElement(selection.rungId, selection.elementId, { address: el.address });
-              void presetMs;
-            }}
+            value={el.presetMs ?? 2000}
+            onChange={(e) => updateElement(selectedRungId, selectedElementId, { presetMs: Math.max(100, Number(e.target.value) || 100) })}
             className="h-8 w-full rounded-lg border border-border bg-transparent px-2 text-xs dark:border-border-dark"
           />
         </Field>
@@ -126,20 +119,14 @@ export function PropertyPanel({ isSimulating }: { isSimulating: boolean }) {
           <input
             type="number"
             min={1}
-            value={el.presetCount}
-            onChange={(e) => {
-              const presetCount = Math.max(1, Number(e.target.value) || 1);
-              updateElement(selection.rungId, selection.elementId, { address: el.address });
-              void presetCount;
-            }}
+            value={el.presetCount ?? 3}
+            onChange={(e) => updateElement(selectedRungId, selectedElementId, { presetCount: Math.max(1, Number(e.target.value) || 1) })}
             className="h-8 w-full rounded-lg border border-border bg-transparent px-2 text-xs dark:border-border-dark"
           />
         </Field>
       )}
 
-      {isSimulating && hasAddress && (
-        <LiveValue element={el} plcState={plcState} />
-      )}
+      {isSimulating && hasAddress && <LiveValue element={el} plcState={plcState} />}
 
       {el.kind === 'COIL' && el.instruction && (
         <Field label="Instruction">
@@ -159,49 +146,32 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function typeLabel(el: LadderElement): string {
+function typeLabel(el: GridElement): string {
   switch (el.kind) {
-    case 'CONTACT':
-      return `Contact ${el.mode}`;
-    case 'COIL':
-      return `Coil${el.coilMode ? ` (${el.coilMode})` : ''}`;
-    case 'TIMER':
-      return `Timer ${el.timerType}`;
-    case 'COUNTER':
-      return `Counter ${el.counterType}`;
-    case 'WIRE':
-      return 'Wire';
-    case 'BRANCH_START':
-      return 'Branch Start';
-    case 'BRANCH_END':
-      return 'Branch End';
-    case 'COMMENT':
-      return 'Comment';
-    default:
-      return 'Unknown';
+    case 'CONTACT': return `Contact ${el.mode ?? 'NO'}`;
+    case 'COIL': return `Coil${el.coilMode ? ` (${el.coilMode})` : ''}`;
+    case 'TIMER': return `Timer ${el.timerType ?? 'TON'}`;
+    case 'COUNTER': return `Counter ${el.counterType ?? 'CTU'}`;
+    case 'COMMENT': return 'Comment';
+    default: return 'Unknown';
   }
 }
 
-function allowedTypesFor(element: LadderElement): AddressType[] {
+function allowedTypesFor(element: GridElement): AddressType[] {
   switch (element.kind) {
-    case 'CONTACT':
-      return ['I', 'O', 'M', 'TIM', 'CTU'];
-    case 'COIL':
-      return ['O', 'M'];
-    case 'TIMER':
-      return ['TIM'];
-    case 'COUNTER':
-      return ['CTU'];
-    default:
-      return [];
+    case 'CONTACT': return ['I', 'O', 'M', 'TIM', 'CTU'];
+    case 'COIL': return ['O', 'M'];
+    case 'TIMER': return ['TIM'];
+    case 'COUNTER': return ['CTU'];
+    default: return [];
   }
 }
 
-function LiveValue({ element, plcState }: { element: LadderElement; plcState: ReturnType<typeof usePlcStore.getState>['state'] }) {
-  if (!('address' in element) || !element.address) return null;
+function LiveValue({ element, plcState }: { element: GridElement; plcState: ReturnType<typeof usePlcStore.getState>['state'] }) {
+  if (!element.address) return null;
   const addr = element.address;
-
   let value: string | null = null;
+
   if (element.kind === 'CONTACT' || element.kind === 'COIL') {
     if (addr.type === 'I') value = plcState.inputs[addr.number] ? 'TRUE' : 'FALSE';
     else if (addr.type === 'O') value = plcState.outputs[addr.number] ? 'TRUE' : 'FALSE';

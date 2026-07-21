@@ -1,30 +1,24 @@
-import { useRef, useState, Fragment, type DragEvent } from 'react';
-import { Stage, Layer, Rect, Text, Line } from 'react-konva';
+import { useRef, useState, useMemo } from 'react';
+import { Stage, Layer, Rect, Text } from 'react-konva';
 import type Konva from 'konva';
-import { useLadderEditorStore } from '@/stores/ladderEditorStore';
+import { useGridEditorStore } from '@/stores/gridEditorStore';
 import { usePlcStore } from '@/stores/plcStore';
 import { ElementNode, type InteractionMode } from './ElementNode';
-import { PropertyDialog } from './PropertyDialog';
-import { ConnectionLine } from './ConnectionLine';
+import { AutoWire, seriesWireSegments, leftRailWire, rightRailWire, branchWireSegments } from './ConnectionLine';
 import { GridBackground } from './GridBackground';
-import { DRAG_MIME, specForDragKind, addressTypeForDragKind } from './ComponentPalette';
-import { gridToWorld, worldToGrid, worldToGridForRung, rightRailWorldX } from '../utils/coords';
-import { nextAvailableAddress } from '../utils/addressAllocation';
-import { findElementRungId, findElement } from '../utils/findElement';
-import { collectElementsInRect, type WorldRect } from '../utils/selection';
+import { PropertyDialog } from './PropertyDialog';
+import { gridToWorld, worldToGrid, leftRailX, rightRailX, rungCenterY, CELL_SIZE } from '../utils/coords';
+import { elementsAtLevel, rungColumnCount, maxBranchLevel } from '@/simulator/editor/gridOperations';
 import { useElementSize } from '../utils/useElementSize';
 import {
+  COLOR_CELL_ARMED,
   COLOR_SELECTED,
-  COLOR_POWER_ON,
-  COLOR_RAIL,
   MIN_SCALE,
   MAX_SCALE,
   ZOOM_SCALE_BY,
   RUNG_HEIGHT,
-  LEFT_RAIL_X,
-  GRID_SIZE,
 } from '../constants';
-import type { LadderElement } from '@/simulator/types/ladder';
+import type { GridElement } from '@/simulator/editor/gridTypes';
 
 interface CameraState {
   x: number;
@@ -37,60 +31,52 @@ interface LadderCanvasProps {
   isSimulating: boolean;
   onAnchorActionDone?: () => void;
   onError?: (message: string) => void;
-  /** Mobile tap-to-place: when a palette tool is armed, tapping the canvas
-   * places the component at the tapped world position. */
+  /** Mobile tap-to-place: when armed, tapping the canvas places the component. */
   pendingPlacementKind?: string | null;
   onCanvasTapPlace?: (worldX: number, worldY: number) => void;
 }
 
 /**
- * The Konva Stage orchestrator for the CX-Programmer-style editor.
+ * Grid-based ladder canvas — CX-Programmer architecture.
  *
- * Key Phase 6 changes:
- * - Auto-wire: dropping a component auto-connects it to the previous
- *   element in the rung. No manual wire drawing needed for series logic.
- * - Rail wires: visual wires from the left rail to start elements and from
- *   end elements to the right rail, drawn every frame from the data model.
- * - Click-to-place: when a palette tool is active, clicking the canvas
- *   places the component at the clicked grid position.
- * - Branch tool: two-click flow creates parallel paths with auto-wired
- *   vertical and horizontal connections.
+ * Key principles:
+ * - Components live at (column, branchLevel) — NOT pixel coordinates
+ * - Wires are derived automatically from grid positions, never stored
+ * - Insert mode: arm a tool, click a cell, component is placed with auto-wire
+ * - Zoom: Ctrl+Wheel, pinch. Pan: middle-mouse drag, touch drag
+ * - Scroll: Wheel = vertical, Shift+Wheel = horizontal
  */
 export function LadderCanvas({
-  interactionMode,
   isSimulating,
-  onAnchorActionDone,
-  onError,
   pendingPlacementKind,
   onCanvasTapPlace,
 }: LadderCanvasProps) {
   const { ref: containerRef, size } = useElementSize<HTMLDivElement>();
   const stageRef = useRef<Konva.Stage | null>(null);
 
-  const document = useLadderEditorStore((s) => s.document);
-  const selection = useLadderEditorStore((s) => s.selection);
-  const selectElement = useLadderEditorStore((s) => s.selectElement);
-  const clearSelection = useLadderEditorStore((s) => s.clearSelection);
-  const addComponent = useLadderEditorStore((s) => s.addComponent);
-  const connect = useLadderEditorStore((s) => s.connect);
-  const branch = useLadderEditorStore((s) => s.branch);
-  const beginDrag = useLadderEditorStore((s) => s.beginDrag);
-  const updateDragPosition = useLadderEditorStore((s) => s.updateDragPosition);
-  const endDrag = useLadderEditorStore((s) => s.endDrag);
-  const updateElement = useLadderEditorStore((s) => s.updateElement);
+  const document = useGridEditorStore((s) => s.document);
+  const selectedElementId = useGridEditorStore((s) => s.selectedElementId);
+  const armedSpec = useGridEditorStore((s) => s.armedSpec);
+  const placeComponent = useGridEditorStore((s) => s.placeComponent);
+  const selectElement = useGridEditorStore((s) => s.selectElement);
+  const clearSelection = useGridEditorStore((s) => s.clearSelection);
+  const updateElement = useGridEditorStore((s) => s.updateElement);
+  const disarmInsert = useGridEditorStore((s) => s.disarmInsert);
 
-  const plcState = usePlcStore((s) => s.state);
   const poweredElements = usePlcStore((s) => s.poweredElements);
   const setInput = usePlcStore((s) => s.setInput);
+  const plcState = usePlcStore((s) => s.state);
 
   const [camera, setCamera] = useState<CameraState>({ x: 20, y: 20, scale: 1 });
-  const [pendingAnchorId, setPendingAnchorId] = useState<string | null>(null);
-  const [multiSelected, setMultiSelected] = useState<Set<string>>(new Set());
-  const [marqueeRect, setMarqueeRect] = useState<WorldRect | null>(null);
+  const [hoverCell, setHoverCell] = useState<{ column: number; branchLevel: number; rungIndex: number } | null>(null);
   const [propertyDialogElementId, setPropertyDialogElementId] = useState<string | null>(null);
 
-  const marqueeGesture = useRef<{ active: boolean; startX: number; startY: number } | null>(null);
   const panGesture = useRef<{ active: boolean; startScreenX: number; startScreenY: number; startCameraX: number; startCameraY: number; moved: boolean } | null>(null);
+
+  const columnCounts = useMemo(
+    () => document.rungOrder.map((id) => rungColumnCount(document.rungs[id])),
+    [document]
+  );
 
   // ── Zoom ────────────────────────────────────────────────────────────
   function handleWheel(e: Konva.KonvaEventObject<WheelEvent>) {
@@ -100,36 +86,45 @@ export function LadderCanvas({
     const pointer = stage.getPointerPosition();
     if (!pointer) return;
 
-    const oldScale = camera.scale;
-    const worldPointUnderCursor = {
-      x: (pointer.x - camera.x) / oldScale,
-      y: (pointer.y - camera.y) / oldScale,
-    };
+    const ctrlOrMeta = e.evt.ctrlKey || e.evt.metaKey;
 
-    const zoomingIn = e.evt.deltaY < 0;
-    const nextScale = Math.min(
-      MAX_SCALE,
-      Math.max(MIN_SCALE, zoomingIn ? oldScale * ZOOM_SCALE_BY : oldScale / ZOOM_SCALE_BY)
-    );
-
-    setCamera({
-      scale: nextScale,
-      x: pointer.x - worldPointUnderCursor.x * nextScale,
-      y: pointer.y - worldPointUnderCursor.y * nextScale,
-    });
+    if (ctrlOrMeta) {
+      // Ctrl+Wheel = zoom
+      const oldScale = camera.scale;
+      const worldPoint = { x: (pointer.x - camera.x) / oldScale, y: (pointer.y - camera.y) / oldScale };
+      const zoomingIn = e.evt.deltaY < 0;
+      const nextScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, zoomingIn ? oldScale * ZOOM_SCALE_BY : oldScale / ZOOM_SCALE_BY));
+      setCamera({ scale: nextScale, x: pointer.x - worldPoint.x * nextScale, y: pointer.y - worldPoint.y * nextScale });
+    } else if (e.evt.shiftKey) {
+      // Shift+Wheel = horizontal scroll
+      setCamera((c) => ({ ...c, x: c.x - e.evt.deltaY }));
+    } else {
+      // Wheel = vertical scroll
+      setCamera((c) => ({ ...c, y: c.y - e.evt.deltaY }));
+    }
   }
 
-  // ── Pan + Marquee Selection ──────────────────────────────────────────
+  // ── Pan ──────────────────────────────────────────────────────────────
   function handleStageMouseDown(e: Konva.KonvaEventObject<MouseEvent>) {
     const stage = stageRef.current;
     if (!stage || e.target !== stage) return;
-    const worldPos = stage.getRelativePointerPosition();
-    if (!worldPos) return;
 
-    if (e.evt.shiftKey) {
-      marqueeGesture.current = { active: true, startX: worldPos.x, startY: worldPos.y };
-      setMarqueeRect({ x: worldPos.x, y: worldPos.y, width: 0, height: 0 });
-    } else {
+    // Middle mouse = pan
+    if (e.evt.button === 1) {
+      e.evt.preventDefault();
+      panGesture.current = {
+        active: true,
+        startScreenX: e.evt.clientX,
+        startScreenY: e.evt.clientY,
+        startCameraX: camera.x,
+        startCameraY: camera.y,
+        moved: false,
+      };
+      return;
+    }
+
+    // Left click on empty canvas
+    if (e.evt.button === 0) {
       panGesture.current = {
         active: true,
         startScreenX: e.evt.clientX,
@@ -145,214 +140,164 @@ export function LadderCanvas({
     const stage = stageRef.current;
     if (!stage) return;
 
-    if (marqueeGesture.current?.active) {
-      const worldPos = stage.getRelativePointerPosition();
-      if (!worldPos) return;
-      const { startX, startY } = marqueeGesture.current;
-      setMarqueeRect({
-        x: Math.min(startX, worldPos.x),
-        y: Math.min(startY, worldPos.y),
-        width: Math.abs(worldPos.x - startX),
-        height: Math.abs(worldPos.y - startY),
-      });
-      return;
-    }
-
     if (panGesture.current?.active) {
       const dx = e.evt.clientX - panGesture.current.startScreenX;
       const dy = e.evt.clientY - panGesture.current.startScreenY;
       if (Math.abs(dx) > 3 || Math.abs(dy) > 3) panGesture.current.moved = true;
       setCamera((c) => ({ ...c, x: panGesture.current!.startCameraX + dx, y: panGesture.current!.startCameraY + dy }));
-    }
-  }
-
-  function handleStageMouseUp() {
-    if (marqueeGesture.current?.active) {
-      marqueeGesture.current.active = false;
-      if (marqueeRect) {
-        const ids = collectElementsInRect(document, marqueeRect);
-        setMultiSelected(new Set(ids));
-        if (ids.length > 0) {
-          const rungId = findElementRungId(document, ids[0]);
-          if (rungId) selectElement(rungId, ids[0]);
-        }
-      }
-      setMarqueeRect(null);
       return;
     }
 
+    // Hover cell tracking for insert mode
+    if (armedSpec || pendingPlacementKind) {
+      const worldPos = stage.getRelativePointerPosition();
+      if (worldPos) {
+        const cell = worldToGrid(worldPos.x, worldPos.y);
+        setHoverCell(cell);
+      }
+    } else {
+      setHoverCell(null);
+    }
+  }
+
+  function handleStageMouseUp(e: Konva.KonvaEventObject<MouseEvent>) {
     if (panGesture.current?.active) {
       const wasClick = !panGesture.current.moved;
       panGesture.current.active = false;
-      if (wasClick) {
-        // Mobile tap-to-place: if a palette tool is armed, place at tap
+
+      if (wasClick && e.evt.button === 0) {
+        const stage = stageRef.current;
+        if (!stage) return;
+        const worldPos = stage.getRelativePointerPosition();
+        if (!worldPos) return;
+
+        // Mobile tap-to-place
         if (pendingPlacementKind && onCanvasTapPlace) {
-          const stage = stageRef.current;
-          if (stage) {
-            const worldPos = stage.getRelativePointerPosition();
-            if (worldPos) onCanvasTapPlace(worldPos.x, worldPos.y);
+          onCanvasTapPlace(worldPos.x, worldPos.y);
+          return;
+        }
+
+        // Insert mode: place armed component
+        if (armedSpec) {
+          const { column, branchLevel, rungIndex } = worldToGrid(worldPos.x, worldPos.y);
+          const clampedIndex = Math.min(Math.max(rungIndex, 0), document.rungOrder.length - 1);
+          const rungId = document.rungOrder[clampedIndex];
+          if (rungId) {
+            placeComponent(rungId, armedSpec, column, branchLevel);
+            disarmInsert();
           }
           return;
         }
+
+        // Click on empty canvas deselects
         clearSelection();
-        setMultiSelected(new Set());
       }
     }
   }
 
-  // ── Auto-wire helper ─────────────────────────────────────────────────
-  /** Finds the rightmost element in a rung that has no outgoing connections
-   * (i.e. the current "end" of the series chain) so a newly dropped element
-   * can be auto-wired after it. Returns null if the rung is empty. */
-  function findChainEnd(rungId: string, excludeId?: string): string | null {
-    const rung = document.rungs[rungId];
-    if (!rung) return null;
-    let rightmost: LadderElement | null = null;
-    for (const id of rung.elementOrder) {
-      if (id === excludeId) continue;
-      const el = rung.elements[id];
-      if (el.kind === 'COMMENT' || el.kind === 'BRANCH_START' || el.kind === 'BRANCH_END') continue;
-      if ((el.connectsTo ?? []).length === 0) {
-        if (!rightmost || el.gridX > rightmost.gridX) rightmost = el;
-      }
-    }
-    return rightmost?.id ?? null;
-  }
-
-  /** Adds a component AND auto-wires it to the chain end of the rung. */
-  function addComponentWithAutoWire(rungId: string, spec: Parameters<typeof addComponent>[1]) {
-    const newEl = addComponent(rungId, spec);
-    if (!newEl) return;
-    const chainEndId = findChainEnd(rungId, newEl.id);
-    if (chainEndId) {
-      connect(rungId, chainEndId, newEl.id);
-    }
-  }
-
-  // ── Palette Drag & Drop ──────────────────────────────────────────────
-  function handleDropFromPalette(e: DragEvent<HTMLDivElement>) {
-    e.preventDefault();
-    const dragKind = e.dataTransfer.getData(DRAG_MIME);
-    if (!dragKind || !containerRef.current) return;
-
-    const rect = containerRef.current.getBoundingClientRect();
-    const screenX = e.clientX - rect.left;
-    const screenY = e.clientY - rect.top;
-    const worldX = (screenX - camera.x) / camera.scale;
-    const worldY = (screenY - camera.y) / camera.scale;
-
-    const { gridX, gridY, rungIndex } = worldToGrid(worldX, worldY);
-    const clampedIndex = Math.min(Math.max(rungIndex, 0), document.rungOrder.length - 1);
-    const rungId = document.rungOrder[clampedIndex];
-    if (!rungId) return;
-
-    const addressType = addressTypeForDragKind(dragKind);
-    const address = addressType ? { type: addressType, number: nextAvailableAddress(document, addressType) } : undefined;
-    const spec = specForDragKind(dragKind, address, { gridX: Math.max(0, gridX), gridY });
-    if (spec) addComponentWithAutoWire(rungId, spec);
-  }
-
-  // ── Drag existing elements ────────────────────────────────────────────
-  function handleElementDragStart(elementId: string) {
-    const rungId = findElementRungId(document, elementId);
-    if (rungId) beginDrag(rungId, elementId);
-  }
-
-  function handleElementDragMove(elementId: string, worldX: number, worldY: number) {
-    const rungId = findElementRungId(document, elementId);
-    if (!rungId) return;
-    const rungIndex = document.rungOrder.indexOf(rungId);
-    const { gridX, gridY } = worldToGridForRung(worldX, worldY, rungIndex);
-    updateDragPosition(gridX, gridY);
-  }
-
-  function handleElementDragEnd(elementId: string, worldX: number, worldY: number) {
-    const rungId = findElementRungId(document, elementId);
-    if (!rungId) return;
-    const rungIndex = document.rungOrder.indexOf(rungId);
-    const { gridX, gridY } = worldToGridForRung(worldX, worldY, rungIndex);
-    updateDragPosition(gridX, gridY);
-    endDrag(true);
-  }
-
-  // ── Connect / Branch two-click flow ──────────────────────────────────
-  function handleAnchorClick(elementId: string) {
-    if (!pendingAnchorId) {
-      setPendingAnchorId(elementId);
-      return;
-    }
-    if (pendingAnchorId === elementId) {
-      setPendingAnchorId(null);
-      return;
-    }
-
-    const rungA = findElementRungId(document, pendingAnchorId);
-    const rungB = findElementRungId(document, elementId);
-    if (!rungA || rungA !== rungB) {
-      onError?.('Connect/branch can only link elements within the same rung.');
-      setPendingAnchorId(null);
-      return;
-    }
-
-    if (interactionMode === 'connect') {
-      connect(rungA, pendingAnchorId, elementId);
-    } else if (interactionMode === 'branch') {
-      const a = findElement(document, pendingAnchorId);
-      const b = findElement(document, elementId);
-      const midGridX = a && b ? Math.round((a.gridX + b.gridX) / 2) : 0;
-      const midGridY = a ? a.gridY + 1 : 1;
-      branch(rungA, pendingAnchorId, elementId, { gridX: midGridX, gridY: midGridY });
-    }
-
-    setPendingAnchorId(null);
-    onAnchorActionDone?.();
-  }
-
-  // ── Selection / input toggle in sim mode ──────────────────────────────
   function handleSelectElement(elementId: string) {
     if (isSimulating) {
-      const el = findElement(document, elementId);
-      if (el?.kind === 'CONTACT' && el.address.type === 'I') {
+      // In sim mode, clicking an input contact toggles the input
+      const el = findElementById(elementId);
+      if (el?.kind === 'CONTACT' && el.address?.type === 'I') {
         setInput(el.address.number, !plcState.inputs[el.address.number]);
         return;
       }
     }
-    const rungId = findElementRungId(document, elementId);
+    const rungId = findRungIdForElement(elementId);
     if (rungId) selectElement(rungId, elementId);
-    setMultiSelected(new Set([elementId]));
   }
 
-  // ── Rail wire computation ─────────────────────────────────────────────
-  /** Returns element ids that are "start" elements (no predecessors → wired
-   * to the left rail) and "end" elements (no successors → wired to right
-   * rail) for a given rung. */
-  function getRailConnections(rungId: string): { starts: LadderElement[]; ends: LadderElement[] } {
-    const rung = document.rungs[rungId];
-    if (!rung) return { starts: [], ends: [] };
-
-    const hasPredecessor = new Set<string>();
-    for (const id of rung.elementOrder) {
-      const el = rung.elements[id];
-      for (const target of el.connectsTo ?? []) hasPredecessor.add(target);
+  function findElementById(elementId: string): GridElement | null {
+    for (const rungId of document.rungOrder) {
+      const el = document.rungs[rungId].elements[elementId];
+      if (el) return el;
     }
-
-    const starts: LadderElement[] = [];
-    const ends: LadderElement[] = [];
-    for (const id of rung.elementOrder) {
-      const el = rung.elements[id];
-      if (el.kind === 'COMMENT') continue;
-      if (!hasPredecessor.has(id)) starts.push(el);
-      if ((el.connectsTo ?? []).length === 0) ends.push(el);
-    }
-    return { starts, ends };
+    return null;
   }
+
+  function findRungIdForElement(elementId: string): string | null {
+    for (const rungId of document.rungOrder) {
+      if (document.rungs[rungId].elements[elementId]) return rungId;
+    }
+    return null;
+  }
+
+  // ── Wire computation ─────────────────────────────────────────────────
+  const wireSegments = useMemo(() => {
+    const segments: Array<{ from: { x: number; y: number }; to: { x: number; y: number }; isPowered: boolean }> = [];
+
+    document.rungOrder.forEach((rungId, rungIndex) => {
+      const rung = document.rungs[rungId];
+      const lrx = leftRailX();
+      const cols = rungColumnCount(rung);
+      const rrx = rightRailX(cols);
+      const maxLevel = maxBranchLevel(rung);
+
+      // For each branch level, compute series wires + rail connections
+      for (let level = 0; level <= maxLevel; level++) {
+        const els = elementsAtLevel(rung, level);
+        if (els.length === 0) continue;
+
+        const positions = els.map((el) => {
+          const pos = gridToWorld(el.column, el.branchLevel, rungIndex);
+          return { x: pos.x, y: pos.y, id: el.id };
+        });
+
+        // Series wires between elements at this level
+        segments.push(...seriesWireSegments(positions, poweredElements));
+
+        // Left rail wire to the first element (only for level 0, or for
+        // branches whose first element is at startColumn)
+        const firstEl = els[0];
+        const firstPos = positions[0];
+        const isFirstInRung = level === 0 || firstEl.column <= (rung.branches.find((b) => b.branchLevel === level)?.startColumn ?? Infinity);
+        if (isFirstInRung && level === 0) {
+          segments.push(leftRailWire(lrx, firstPos, !!poweredElements[firstEl.id]));
+        }
+
+        // Right rail wire from the last element (only for level 0)
+        if (level === 0) {
+          const lastEl = els[els.length - 1];
+          const lastPos = positions[positions.length - 1];
+          segments.push(rightRailWire(lastPos, rrx, !!poweredElements[lastEl.id]));
+        }
+      }
+
+      // Branch wires: vertical diverge/converge
+      for (const branch of rung.branches) {
+        const branchEls = elementsAtLevel(rung, branch.branchLevel);
+        if (branchEls.length === 0) continue;
+
+        const parentEls = elementsAtLevel(rung, branch.parentLevel);
+        const divergeParent = parentEls.filter((e) => e.column < branch.startColumn).sort((a, b) => b.column - a.column)[0];
+        const convergeParent = parentEls.filter((e) => e.column >= branch.endColumn).sort((a, b) => a.column - b.column)[0];
+
+        if (!divergeParent || !convergeParent) continue;
+
+        const divergePos = gridToWorld(divergeParent.column, divergeParent.branchLevel, rungIndex);
+        const branchFirstPos = gridToWorld(branchEls[0].column, branchEls[0].branchLevel, rungIndex);
+        const branchLastPos = gridToWorld(branchEls[branchEls.length - 1].column, branchEls[branchEls.length - 1].branchLevel, rungIndex);
+        const convergePos = gridToWorld(convergeParent.column, convergeParent.branchLevel, rungIndex);
+
+        segments.push(...branchWireSegments(
+          { x: divergePos.x + CELL_SIZE / 2, y: divergePos.y },
+          { x: branchFirstPos.x - CELL_SIZE / 2, y: branchFirstPos.y },
+          { x: convergePos.x - CELL_SIZE / 2, y: convergePos.y },
+          { x: branchLastPos.x + CELL_SIZE / 2, y: branchLastPos.y },
+          !!poweredElements[divergeParent.id]
+        ));
+      }
+    });
+
+    return segments;
+  }, [document, poweredElements]);
 
   return (
     <div
       ref={containerRef}
       className="relative h-full w-full overflow-hidden rounded-2xl bg-white dark:bg-gray-950"
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={handleDropFromPalette}
+      style={{ cursor: armedSpec || pendingPlacementKind ? 'crosshair' : 'default' }}
     >
       <Stage
         ref={stageRef}
@@ -368,133 +313,84 @@ export function LadderCanvas({
         onMouseUp={handleStageMouseUp}
       >
         <Layer>
-          <GridBackground camera={camera} stageWidth={size.width} stageHeight={size.height} rungCount={document.rungOrder.length} />
+          <GridBackground
+            camera={camera}
+            stageWidth={size.width}
+            stageHeight={size.height}
+            rungCount={document.rungOrder.length}
+            columnCounts={columnCounts}
+          />
 
-          {document.rungOrder.map((rungId, rungIndex) => {
-            const rung = document.rungs[rungId];
-            const { starts, ends } = getRailConnections(rungId);
-            const railY = rungIndex * RUNG_HEIGHT + RUNG_HEIGHT / 2;
-            const rightX = rightRailWorldX();
-
-            return (
-              <Fragment key={rungId}>
-                {/* Rung number label */}
-                <Text
-                  text={`${rungIndex + 1}`}
-                  x={LEFT_RAIL_X - 28}
-                  y={railY - 7}
-                  fontSize={12}
-                  fontStyle="bold"
-                  fill="#9A9A9A"
-                />
-
-                {/* Left rail → start elements wires */}
-                {starts.map((el) => {
-                  const pos = gridToWorld(el.gridX, el.gridY, rungIndex);
-                  const isPowered = isSimulating && !!poweredElements[el.id];
-                  return (
-                    <Line
-                      key={`rail-l-${el.id}`}
-                      points={[LEFT_RAIL_X, railY, pos.x - GRID_SIZE / 2, pos.y]}
-                      stroke={isPowered ? COLOR_POWER_ON : COLOR_RAIL}
-                      strokeWidth={isPowered ? 3 : 2.5}
-                      lineCap="round"
-                      shadowColor={isPowered ? COLOR_POWER_ON : undefined}
-                      shadowBlur={isPowered ? 6 : 0}
-                      shadowOpacity={isPowered ? 0.5 : 0}
-                    />
-                  );
-                })}
-
-                {/* End elements → right rail wires */}
-                {ends.map((el) => {
-                  const pos = gridToWorld(el.gridX, el.gridY, rungIndex);
-                  const isPowered = isSimulating && !!poweredElements[el.id];
-                  return (
-                    <Line
-                      key={`rail-r-${el.id}`}
-                      points={[pos.x + GRID_SIZE / 2, pos.y, rightX, railY]}
-                      stroke={isPowered ? COLOR_POWER_ON : COLOR_RAIL}
-                      strokeWidth={isPowered ? 3 : 2.5}
-                      lineCap="round"
-                      shadowColor={isPowered ? COLOR_POWER_ON : undefined}
-                      shadowBlur={isPowered ? 6 : 0}
-                      shadowOpacity={isPowered ? 0.5 : 0}
-                    />
-                  );
-                })}
-
-                {/* Element-to-element connection wires */}
-                {rung.elementOrder.map((id) => {
-                  const el = rung.elements[id];
-                  const fromPos = gridToWorld(el.gridX, el.gridY, rungIndex);
-                  return (el.connectsTo ?? []).map((targetId) => {
-                    const target = rung.elements[targetId];
-                    if (!target) return null;
-                    const toPos = gridToWorld(target.gridX, target.gridY, rungIndex);
-                    return (
-                      <ConnectionLine
-                        key={`${id}->${targetId}`}
-                        from={fromPos}
-                        to={toPos}
-                        isPowered={isSimulating && !!poweredElements[id]}
-                      />
-                    );
-                  });
-                })}
-
-                {/* Element glyphs */}
-                {rung.elementOrder.map((id) => {
-                  const el = rung.elements[id];
-                  const pos = gridToWorld(el.gridX, el.gridY, rungIndex);
-                  return (
-                    <ElementNode
-                      key={id}
-                      element={el}
-                      x={pos.x}
-                      y={pos.y}
-                      isPowered={isSimulating && !!poweredElements[id]}
-                      isSelected={selection?.elementId === id || multiSelected.has(id)}
-                      isPendingAnchor={pendingAnchorId === id}
-                      interactionMode={interactionMode}
-                      onSelect={handleSelectElement}
-                      onAnchorClick={handleAnchorClick}
-                      onDragStart={handleElementDragStart}
-                      onDragMove={handleElementDragMove}
-                      onDragEnd={handleElementDragEnd}
-                      onOpenProperties={setPropertyDialogElementId}
-                    />
-                  );
-                })}
-              </Fragment>
-            );
-          })}
-
-          {marqueeRect && (
+          {/* Hover cell highlight in insert mode */}
+          {hoverCell && (armedSpec || pendingPlacementKind) && (
             <Rect
-              x={marqueeRect.x}
-              y={marqueeRect.y}
-              width={marqueeRect.width}
-              height={marqueeRect.height}
-              fill="rgba(37,99,235,0.08)"
+              x={leftRailX() + 20 + hoverCell.column * CELL_SIZE}
+              y={hoverCell.rungIndex * RUNG_HEIGHT + RUNG_HEIGHT / 2 + hoverCell.branchLevel * 70 - CELL_SIZE / 2}
+              width={CELL_SIZE}
+              height={CELL_SIZE}
+              fill={COLOR_CELL_ARMED}
               stroke={COLOR_SELECTED}
               strokeWidth={1}
-              dash={[4, 3]}
+              dash={[3, 3]}
+              cornerRadius={4}
             />
           )}
+
+          {/* Auto-derived wires */}
+          <AutoWire segments={wireSegments} />
+
+          {/* Elements */}
+          {document.rungOrder.map((rungId, rungIndex) => {
+            const rung = document.rungs[rungId];
+            return rung.elementOrder.map((elementId) => {
+              const el = rung.elements[elementId];
+              const pos = gridToWorld(el.column, el.branchLevel, rungIndex);
+              return (
+                <ElementNode
+                  key={elementId}
+                  element={el}
+                  x={pos.x}
+                  y={pos.y}
+                  isPowered={isSimulating && !!poweredElements[elementId]}
+                  isSelected={selectedElementId === elementId}
+                  onSelect={handleSelectElement}
+                  onOpenProperties={setPropertyDialogElementId}
+                />
+              );
+            });
+          })}
+
+          {/* Rung number labels */}
+          {document.rungOrder.map((_, rungIndex) => (
+            <Text
+              key={`rung-label-${rungIndex}`}
+              text={`${rungIndex + 1}`}
+              x={leftRailX() - 30}
+              y={rungCenterY(rungIndex) - 7}
+              fontSize={12}
+              fontStyle="bold"
+              fill="#9A9A9A"
+            />
+          ))}
         </Layer>
       </Stage>
 
       {propertyDialogElementId &&
         (() => {
-          const el = findElement(document, propertyDialogElementId);
-          const rungId = findElementRungId(document, propertyDialogElementId);
+          const el = findElementById(propertyDialogElementId);
+          const rungId = findRungIdForElement(propertyDialogElementId);
           if (!el || !rungId) return null;
           return (
             <PropertyDialog
               element={el}
               onClose={() => setPropertyDialogElementId(null)}
-              onSave={(updates) => updateElement(rungId, propertyDialogElementId, updates)}
+              onSave={(updates) => {
+                updateElement(rungId, propertyDialogElementId, {
+                  ...(updates.address ? { address: updates.address } : {}),
+                  comment: updates.comment,
+                  alias: updates.alias,
+                });
+              }}
             />
           );
         })()}

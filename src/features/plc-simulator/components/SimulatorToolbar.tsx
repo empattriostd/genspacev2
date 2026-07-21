@@ -1,4 +1,4 @@
-import { MousePointer2, Cable, GitBranch, Play, Square, Plus, AlertCircle, RotateCcw, StepForward, Bug } from 'lucide-react';
+import { MousePointer2, GitBranch, Play, Square, Plus, AlertCircle, RotateCcw, StepForward, Bug } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/utils/cn';
@@ -23,7 +23,7 @@ interface SimulatorToolbarProps {
 
 const MODES: { mode: InteractionMode; label: string; icon: typeof MousePointer2; hint: string }[] = [
   { mode: 'select', label: 'Select', icon: MousePointer2, hint: 'Click to select, drag to move' },
-  { mode: 'connect', label: 'Connect', icon: Cable, hint: 'Click two elements to wire them in series' },
+  { mode: 'insert', label: 'Insert', icon: Plus, hint: 'Click a toolbox item, then click a cell to place' },
   { mode: 'branch', label: 'Branch', icon: GitBranch, hint: 'Click two elements to create a parallel branch' },
 ];
 
@@ -128,8 +128,8 @@ export function SimulatorToolbar({
       <div className="flex items-center justify-between px-1">
         {mode !== 'select' && !isSimulating ? (
           <p className="text-[11px] text-muted-foreground">
-            {mode === 'connect'
-              ? 'Click first element, then second element to wire them.'
+            {mode === 'insert'
+              ? 'Click a toolbox item to arm it, then click a cell on the canvas to place.'
               : 'Click first element, then second element to create a parallel branch.'}
           </p>
         ) : (

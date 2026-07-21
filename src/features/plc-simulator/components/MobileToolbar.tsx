@@ -1,4 +1,4 @@
-import { MousePointer2, Cable, GitBranch, Play, Square, Plus, RotateCcw, Wrench, Bug } from 'lucide-react';
+import { MousePointer2, GitBranch, Play, Square, Plus, RotateCcw, Wrench, Bug } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import type { InteractionMode } from './ElementNode';
 
@@ -16,9 +16,9 @@ interface MobileToolbarProps {
 
 const MODE_ICONS: { mode: InteractionMode; icon: typeof MousePointer2; label: string }[] = [
   { mode: 'select', icon: MousePointer2, label: 'Sel' },
-  { mode: 'connect', icon: Cable, label: 'Wire' },
+  { mode: 'insert', icon: Plus, label: 'Insert' },
   { mode: 'branch', icon: GitBranch, label: 'Branch' },
-];
+];;
 
 /**
  * Compact mobile toolbar — icon-only buttons in a single row. Replaces the

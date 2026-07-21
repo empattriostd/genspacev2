@@ -2,13 +2,15 @@ import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronUp, ChevronDown, X } from 'lucide-react';
 import { cn } from '@/utils/cn';
-
-export const DRAG_MIME = 'application/x-genspace-component';
+import { useGridEditorStore } from '@/stores/gridEditorStore';
+import type { Address, AddressType } from '@/simulator/types/address';
+import type { PlacementSpec } from '@/simulator/editor/gridTypes';
 
 interface PaletteItem {
   label: string;
-  dragKind: string;
+  specFactory: (address: Address) => PlacementSpec;
   glyph: string;
+  needsAddress: boolean;
 }
 
 interface PaletteGroup {
@@ -20,83 +22,99 @@ const PALETTE_GROUPS: PaletteGroup[] = [
   {
     title: 'Contacts',
     items: [
-      { label: 'NO', dragKind: 'CONTACT_NO', glyph: '⊣ ⊢' },
-      { label: 'NC', dragKind: 'CONTACT_NC', glyph: '⊣╱⊢' },
-      { label: 'Rising', dragKind: 'CONTACT_RISING', glyph: '↑' },
-      { label: 'Falling', dragKind: 'CONTACT_FALLING', glyph: '↓' },
+      { label: 'NO', glyph: '⊣ ⊢', needsAddress: true, specFactory: (a) => ({ kind: 'CONTACT', mode: 'NO', address: a }) },
+      { label: 'NC', glyph: '⊣╱⊢', needsAddress: true, specFactory: (a) => ({ kind: 'CONTACT', mode: 'NC', address: a }) },
+      { label: 'Rising', glyph: '↑', needsAddress: true, specFactory: (a) => ({ kind: 'CONTACT', mode: 'RISING_EDGE', address: a }) },
+      { label: 'Falling', glyph: '↓', needsAddress: true, specFactory: (a) => ({ kind: 'CONTACT', mode: 'FALLING_EDGE', address: a }) },
     ],
   },
   {
     title: 'Coils',
     items: [
-      { label: 'Coil', dragKind: 'COIL_O', glyph: '( )' },
-      { label: 'SET', dragKind: 'COIL_O_SET', glyph: '(S)' },
-      { label: 'RESET', dragKind: 'COIL_O_RESET', glyph: '(R)' },
-      { label: 'Memory', dragKind: 'COIL_M', glyph: '(M)' },
+      { label: 'Coil', glyph: '( )', needsAddress: true, specFactory: (a) => ({ kind: 'COIL', address: a, coilMode: 'NORMAL' }) },
+      { label: 'SET', glyph: '(S)', needsAddress: true, specFactory: (a) => ({ kind: 'COIL', address: a, coilMode: 'SET' }) },
+      { label: 'RESET', glyph: '(R)', needsAddress: true, specFactory: (a) => ({ kind: 'COIL', address: a, coilMode: 'RESET' }) },
     ],
   },
   {
     title: 'Timers',
     items: [
-      { label: 'TON', dragKind: 'TIMER_TON', glyph: '[TON]' },
-      { label: 'TOF', dragKind: 'TIMER_TOF', glyph: '[TOF]' },
-      { label: 'TP', dragKind: 'TIMER_TP', glyph: '[TP]' },
+      { label: 'TON', glyph: '[TON]', needsAddress: true, specFactory: (a) => ({ kind: 'TIMER', address: a, presetMs: 2000, timerType: 'TON' }) },
+      { label: 'TOF', glyph: '[TOF]', needsAddress: true, specFactory: (a) => ({ kind: 'TIMER', address: a, presetMs: 2000, timerType: 'TOF' }) },
+      { label: 'TP', glyph: '[TP]', needsAddress: true, specFactory: (a) => ({ kind: 'TIMER', address: a, presetMs: 2000, timerType: 'TP' }) },
     ],
   },
   {
     title: 'Counters',
     items: [
-      { label: 'CTU', dragKind: 'COUNTER_CTU', glyph: '[CTU]' },
-      { label: 'CTD', dragKind: 'COUNTER_CTD', glyph: '[CTD]' },
-    ],
-  },
-  {
-    title: 'Instructions',
-    items: [
-      { label: 'MOV', dragKind: 'INSTR_MOV', glyph: 'MOV' },
-      { label: 'CMP', dragKind: 'INSTR_CMP', glyph: 'CMP' },
-      { label: 'ADD', dragKind: 'INSTR_ADD', glyph: 'ADD' },
-      { label: 'SUB', dragKind: 'INSTR_SUB', glyph: 'SUB' },
+      { label: 'CTU', glyph: '[CTU]', needsAddress: true, specFactory: (a) => ({ kind: 'COUNTER', address: a, presetCount: 3, counterType: 'CTU' }) },
+      { label: 'CTD', glyph: '[CTD]', needsAddress: true, specFactory: (a) => ({ kind: 'COUNTER', address: a, presetCount: 3, counterType: 'CTD' }) },
     ],
   },
   {
     title: 'Other',
     items: [
-      { label: 'M-Contact', dragKind: 'CONTACT_M', glyph: '⊣M⊢' },
-      { label: 'Wire', dragKind: 'WIRE', glyph: '──' },
-      { label: 'Comment', dragKind: 'COMMENT', glyph: '▭' },
+      { label: 'Comment', glyph: '▭', needsAddress: false, specFactory: () => ({ kind: 'COMMENT', text: 'Comment' }) },
     ],
   },
 ];
 
+function inferAddressType(item: PaletteItem): AddressType {
+  if (item.label === 'SET' || item.label === 'RESET' || item.label === 'Coil') return 'O';
+  if (item.label === 'TON' || item.label === 'TOF' || item.label === 'TP') return 'TIM';
+  if (item.label === 'CTU' || item.label === 'CTD') return 'CTU';
+  return 'I';
+}
+
 interface MobileToolboxSheetProps {
   isOpen: boolean;
   onClose: () => void;
-  onPick: (dragKind: string) => void;
-  pendingKind: string | null;
 }
 
 /**
- * Mobile bottom-sheet toolbox. Instead of drag-and-drop (which is awkward on
- * touch), the user taps a tool to "arm" it, then taps the canvas to place.
- * The sheet snaps to half-height with a drag handle and can be dismissed by
- * swiping down or tapping the backdrop.
+ * Mobile bottom-sheet toolbox. Tap a tool to arm it (Insert Mode), then tap
+ * the canvas to place. Uses the grid store's armInsert — same logic as
+ * desktop.
  */
-export function MobileToolboxSheet({ isOpen, onClose, onPick, pendingKind }: MobileToolboxSheetProps) {
+export function MobileToolboxSheet({ isOpen, onClose }: MobileToolboxSheetProps) {
   const [openGroup, setOpenGroup] = useState<string | null>('Contacts');
-  const sheetRef = useRef<HTMLDivElement | null>(null);
+  const armInsert = useGridEditorStore((s) => s.armInsert);
+  const document = useGridEditorStore((s) => s.document);
+  const armedSpec = useGridEditorStore((s) => s.armedSpec);
   const dragStartY = useRef<number>(0);
 
   useEffect(() => {
     if (isOpen) setOpenGroup('Contacts');
   }, [isOpen]);
 
+  function nextAddress(type: AddressType): number {
+    const used = new Set<number>();
+    for (const rungId of document.rungOrder) {
+      for (const id of document.rungs[rungId].elementOrder) {
+        const el = document.rungs[rungId].elements[id];
+        if (el.address?.type === type) used.add(el.address.number);
+      }
+    }
+    for (let n = 1; n <= 26; n++) if (!used.has(n)) return n;
+    return 26;
+  }
+
+  function handlePick(item: PaletteItem) {
+    if (item.needsAddress) {
+      const type = inferAddressType(item);
+      const address = { type, number: nextAddress(type) };
+      armInsert(item.specFactory(address));
+    } else {
+      armInsert(item.specFactory({ type: 'I', number: 1 }));
+    }
+    onClose();
+  }
+
   function handleTouchStart(e: React.TouchEvent) {
     dragStartY.current = e.touches[0].clientY;
   }
   function handleTouchMove(e: React.TouchEvent) {
-    const delta = e.touches[0].clientY - dragStartY.current;
-    if (delta > 80) onClose();
+    if (e.touches[0].clientY - dragStartY.current > 80) onClose();
   }
 
   return (
@@ -111,7 +129,6 @@ export function MobileToolboxSheet({ isOpen, onClose, onPick, pendingKind }: Mob
             className="fixed inset-0 z-40 bg-black/40"
           />
           <motion.div
-            ref={sheetRef}
             initial={{ y: '100%' }}
             animate={{ y: 0 }}
             exit={{ y: '100%' }}
@@ -129,9 +146,9 @@ export function MobileToolboxSheet({ isOpen, onClose, onPick, pendingKind }: Mob
                 <X size={18} />
               </button>
             </div>
-            {pendingKind && (
-              <div className="mx-4 mb-2 rounded-lg bg-blue-500/10 px-3 py-1.5 text-xs text-blue-600 dark:text-blue-400">
-                Tap canvas to place: <span className="font-bold">{pendingKind}</span>
+            {armedSpec && (
+              <div className="mx-4 mb-2 rounded-lg bg-green-500/10 px-3 py-1.5 text-xs text-green-600 dark:text-green-400">
+                Armed: <span className="font-bold">{armedSpec.kind}</span> — tap a cell on the canvas to place.
               </div>
             )}
             <div className="px-4 pb-6">
@@ -150,13 +167,11 @@ export function MobileToolboxSheet({ isOpen, onClose, onPick, pendingKind }: Mob
                       <div className="grid grid-cols-3 gap-1.5 pb-2">
                         {group.items.map((item) => (
                           <button
-                            key={item.dragKind}
-                            onClick={() => onPick(item.dragKind)}
+                            key={item.label}
+                            onClick={() => handlePick(item)}
                             className={cn(
                               'flex flex-col items-center gap-1 rounded-xl border px-2 py-2.5 text-xs font-medium transition-colors',
-                              pendingKind === item.dragKind
-                                ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-blue-400'
-                                : 'border-border bg-muted/20 hover:bg-muted/40 dark:border-border-dark dark:hover:bg-white/5'
+                              'border-border bg-muted/20 hover:bg-muted/40 dark:border-border-dark dark:hover:bg-white/5'
                             )}
                           >
                             <span className="font-mono text-sm">{item.glyph}</span>

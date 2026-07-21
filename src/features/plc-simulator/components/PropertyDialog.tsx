@@ -2,20 +2,16 @@ import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import type { LadderElement } from '@/simulator/types/ladder';
+import type { GridElement } from '@/simulator/editor/gridTypes';
 import type { AddressType } from '@/simulator/types/address';
 
 interface PropertyDialogProps {
-  element: LadderElement;
+  element: GridElement;
   onClose: () => void;
   onSave: (updates: { address?: { type: AddressType; number: number }; comment?: string; alias?: string }) => void;
 }
 
-/** Valid address types per element kind — a CONTACT can read any bit, but a
- * COIL only ever targets O or M, and TIMER/COUNTER addresses are fixed to
- * their own namespace (changing a Timer's address type would turn it into
- * something else entirely, so that field is locked for those two kinds). */
-function allowedTypesFor(element: LadderElement): AddressType[] {
+function allowedTypesFor(element: GridElement): AddressType[] {
   switch (element.kind) {
     case 'CONTACT':
       return ['I', 'O', 'M', 'TIM', 'CTU'];
@@ -31,14 +27,11 @@ function allowedTypesFor(element: LadderElement): AddressType[] {
 }
 
 /**
- * Double-click property editor — Address / Comment / Alias, per the Phase 5
- * brief ("Semua Contact, Coil, Timer, Counter harus bisa di-double click").
- * Address can be reassigned from here; validity (duplicates, wrong type) is
- * still enforced by the existing parser at export/Run time, surfaced via
- * the toolbar's error banner — this dialog doesn't duplicate that check.
+ * Double-click property editor — Address / Comment / Alias. Works with the
+ * grid-based data model (GridElement, not LadderElement).
  */
 export function PropertyDialog({ element, onClose, onSave }: PropertyDialogProps) {
-  const hasAddress = 'address' in element && !!element.address;
+  const hasAddress = !!element.address;
   const allowedTypes = allowedTypesFor(element);
 
   const [addressType, setAddressType] = useState<AddressType>(hasAddress ? element.address!.type : allowedTypes[0]);
@@ -89,9 +82,7 @@ export function PropertyDialog({ element, onClose, onSave }: PropertyDialogProps
                   className="h-9 rounded-xl border border-border bg-transparent px-2 text-sm disabled:opacity-50 dark:border-border-dark"
                 >
                   {allowedTypes.map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
+                    <option key={t} value={t}>{t}</option>
                   ))}
                 </select>
                 <input
@@ -105,7 +96,7 @@ export function PropertyDialog({ element, onClose, onSave }: PropertyDialogProps
               </div>
               {addressLocked && (
                 <p className="mt-1 text-[11px] text-muted-foreground">
-                  Address type is fixed for {element.kind === 'TIMER' ? 'Timer' : 'Counter'} blocks — only the number can change.
+                  Address type is fixed for {element.kind === 'TIMER' ? 'Timer' : 'Counter'} blocks.
                 </p>
               )}
             </div>
@@ -132,12 +123,8 @@ export function PropertyDialog({ element, onClose, onSave }: PropertyDialogProps
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
-            <Button variant="outline" size="sm" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button size="sm" onClick={handleSave}>
-              Save
-            </Button>
+            <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
+            <Button size="sm" onClick={handleSave}>Save</Button>
           </div>
         </CardContent>
       </Card>

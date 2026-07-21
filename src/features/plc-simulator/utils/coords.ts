@@ -1,43 +1,70 @@
-import { GRID_SIZE, RUNG_HEIGHT, LEFT_RAIL_X, RIGHT_RAIL_X } from '../constants';
+import {
+  CELL_SIZE,
+  RAIL_LEFT_PADDING,
+  RUNG_HEIGHT,
+  BRANCH_LEVEL_HEIGHT,
+  RAIL_RIGHT_PADDING,
+  MAX_COLUMNS,
+} from '../constants';
 
-/** Converts an element's own (gridX, gridY) + which rung it's in, into
- * world-space pixel coordinates the Konva layer renders at scale=1.
- * gridX=0 sits one full grid step to the right of the left rail, leaving
- * room for the rail-to-first-element wire stub to read clearly. */
-export function gridToWorld(gridX: number, gridY: number, rungIndex: number): { x: number; y: number } {
+// ─── Grid Coordinate System ─────────────────────────────────────────────
+// Converts logical grid coordinates (rungIndex, column, branchLevel) to
+// world-space pixel positions for the Konva renderer. This is the ONLY
+// place pixel positions are computed — components never store pixel coords.
+
+/** Converts a grid position to world-space pixel coordinates. */
+export function gridToWorld(
+  column: number,
+  branchLevel: number,
+  rungIndex: number
+): { x: number; y: number } {
   return {
-    x: LEFT_RAIL_X + (gridX + 1) * GRID_SIZE,
-    y: rungIndex * RUNG_HEIGHT + gridY * (GRID_SIZE * 0.8) + RUNG_HEIGHT / 2,
+    x: RAIL_LEFT_PADDING + column * CELL_SIZE + CELL_SIZE / 2,
+    y: rungIndex * RUNG_HEIGHT + RUNG_HEIGHT / 2 + branchLevel * BRANCH_LEVEL_HEIGHT,
   };
 }
 
-/** Inverse of gridToWorld — used when dropping a NEW component from the
- * palette, where we don't yet know which rung it belongs to and must infer
- * it from the vertical drop position. */
-export function worldToGrid(x: number, y: number): { gridX: number; gridY: number; rungIndex: number } {
+/** Converts world-space pixel coordinates back to grid coordinates. */
+export function worldToGrid(
+  x: number,
+  y: number
+): { column: number; branchLevel: number; rungIndex: number } {
   const rungIndex = Math.max(0, Math.floor(y / RUNG_HEIGHT));
   const localY = y - rungIndex * RUNG_HEIGHT - RUNG_HEIGHT / 2;
+  const branchLevel = Math.max(0, Math.round(localY / BRANCH_LEVEL_HEIGHT));
   return {
-    gridX: Math.round((x - LEFT_RAIL_X) / GRID_SIZE) - 1,
-    gridY: Math.round(localY / (GRID_SIZE * 0.8)),
+    column: Math.max(0, Math.round((x - RAIL_LEFT_PADDING) / CELL_SIZE - 0.5)),
+    branchLevel,
     rungIndex,
   };
 }
 
-/** Same as worldToGrid, but for repositioning an element that's already
- * known to belong to a specific rung — used while dragging an existing
- * element, so it can't accidentally "fall" into a neighboring rung's band
- * just because the pointer strayed slightly outside RUNG_HEIGHT. */
-export function worldToGridForRung(x: number, y: number, rungIndex: number): { gridX: number; gridY: number } {
-  const localY = y - rungIndex * RUNG_HEIGHT - RUNG_HEIGHT / 2;
-  return {
-    gridX: Math.round((x - LEFT_RAIL_X) / GRID_SIZE) - 1,
-    gridY: Math.round(localY / (GRID_SIZE * 0.8)),
-  };
+/** Returns the world-space x of the left power rail. */
+export function leftRailX(): number {
+  return RAIL_LEFT_PADDING - 20;
 }
 
-/** Returns the world-space x position where the right power rail sits for a
- * given rung — always at RIGHT_RAIL_X, independent of element positions. */
-export function rightRailWorldX(): number {
-  return RIGHT_RAIL_X;
+/** Returns the world-space x of the right power rail for a rung with the
+ * given number of columns. */
+export function rightRailX(columnCount: number = 0): number {
+  const cols = Math.max(columnCount, 1);
+  return RAIL_LEFT_PADDING + cols * CELL_SIZE + RAIL_RIGHT_PADDING;
 }
+
+/** Returns the world-space y of the center line for a rung at the main
+ * branch level (level 0). */
+export function rungCenterY(rungIndex: number): number {
+  return rungIndex * RUNG_HEIGHT + RUNG_HEIGHT / 2;
+}
+
+/** Returns the total world height needed to render all rungs. */
+export function totalHeight(rungCount: number): number {
+  return rungCount * RUNG_HEIGHT;
+}
+
+/** Returns the total world width needed for a rung with the given columns. */
+export function rungWidth(columnCount: number): number {
+  return rightRailX(columnCount) + 20;
+}
+
+export { CELL_SIZE, RUNG_HEIGHT, BRANCH_LEVEL_HEIGHT, MAX_COLUMNS };

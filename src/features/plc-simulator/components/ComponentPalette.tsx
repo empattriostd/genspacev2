@@ -1,14 +1,14 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { Address, AddressType } from '@/simulator/types/address';
-import type { NewComponentSpec } from '@/simulator/editor/componentSpec';
-
-export const DRAG_MIME = 'application/x-genspace-component';
+import type { PlacementSpec } from '@/simulator/editor/gridTypes';
+import { useGridEditorStore } from '@/stores/gridEditorStore';
 
 interface PaletteItem {
   label: string;
-  dragKind: string;
+  specFactory: (address: Address) => PlacementSpec;
   glyph: string;
+  needsAddress: boolean;
 }
 
 interface PaletteGroup {
@@ -20,59 +20,90 @@ const PALETTE_GROUPS: PaletteGroup[] = [
   {
     title: 'Contacts',
     items: [
-      { label: 'NO', dragKind: 'CONTACT_NO', glyph: '⊣ ⊢' },
-      { label: 'NC', dragKind: 'CONTACT_NC', glyph: '⊣╱⊢' },
-      { label: 'Rising Edge', dragKind: 'CONTACT_RISING', glyph: '↑' },
-      { label: 'Falling Edge', dragKind: 'CONTACT_FALLING', glyph: '↓' },
+      { label: 'NO', glyph: '⊣ ⊢', needsAddress: true, specFactory: (a) => ({ kind: 'CONTACT', mode: 'NO', address: a }) },
+      { label: 'NC', glyph: '⊣╱⊢', needsAddress: true, specFactory: (a) => ({ kind: 'CONTACT', mode: 'NC', address: a }) },
+      { label: 'Rising', glyph: '↑', needsAddress: true, specFactory: (a) => ({ kind: 'CONTACT', mode: 'RISING_EDGE', address: a }) },
+      { label: 'Falling', glyph: '↓', needsAddress: true, specFactory: (a) => ({ kind: 'CONTACT', mode: 'FALLING_EDGE', address: a }) },
     ],
   },
   {
     title: 'Coils',
     items: [
-      { label: 'Coil', dragKind: 'COIL_O', glyph: '( )' },
-      { label: 'SET', dragKind: 'COIL_O_SET', glyph: '(S)' },
-      { label: 'RESET', dragKind: 'COIL_O_RESET', glyph: '(R)' },
-      { label: 'Memory Coil', dragKind: 'COIL_M', glyph: '(M)' },
+      { label: 'Coil', glyph: '( )', needsAddress: true, specFactory: (a) => ({ kind: 'COIL', address: a, coilMode: 'NORMAL' }) },
+      { label: 'SET', glyph: '(S)', needsAddress: true, specFactory: (a) => ({ kind: 'COIL', address: a, coilMode: 'SET' }) },
+      { label: 'RESET', glyph: '(R)', needsAddress: true, specFactory: (a) => ({ kind: 'COIL', address: a, coilMode: 'RESET' }) },
+      { label: 'Memory', glyph: '(M)', needsAddress: true, specFactory: (a) => ({ kind: 'COIL', address: a, coilMode: 'NORMAL' }) },
     ],
   },
   {
     title: 'Timers',
     items: [
-      { label: 'TON', dragKind: 'TIMER_TON', glyph: '[TON]' },
-      { label: 'TOF', dragKind: 'TIMER_TOF', glyph: '[TOF]' },
-      { label: 'TP', dragKind: 'TIMER_TP', glyph: '[TP]' },
+      { label: 'TON', glyph: '[TON]', needsAddress: true, specFactory: (a) => ({ kind: 'TIMER', address: a, presetMs: 2000, timerType: 'TON' }) },
+      { label: 'TOF', glyph: '[TOF]', needsAddress: true, specFactory: (a) => ({ kind: 'TIMER', address: a, presetMs: 2000, timerType: 'TOF' }) },
+      { label: 'TP', glyph: '[TP]', needsAddress: true, specFactory: (a) => ({ kind: 'TIMER', address: a, presetMs: 2000, timerType: 'TP' }) },
     ],
   },
   {
     title: 'Counters',
     items: [
-      { label: 'CTU', dragKind: 'COUNTER_CTU', glyph: '[CTU]' },
-      { label: 'CTD', dragKind: 'COUNTER_CTD', glyph: '[CTD]' },
+      { label: 'CTU', glyph: '[CTU]', needsAddress: true, specFactory: (a) => ({ kind: 'COUNTER', address: a, presetCount: 3, counterType: 'CTU' }) },
+      { label: 'CTD', glyph: '[CTD]', needsAddress: true, specFactory: (a) => ({ kind: 'COUNTER', address: a, presetCount: 3, counterType: 'CTD' }) },
     ],
   },
   {
     title: 'Instructions',
     items: [
-      { label: 'MOV', dragKind: 'INSTR_MOV', glyph: 'MOV' },
-      { label: 'CMP', dragKind: 'INSTR_CMP', glyph: 'CMP' },
-      { label: 'ADD', dragKind: 'INSTR_ADD', glyph: 'ADD' },
-      { label: 'SUB', dragKind: 'INSTR_SUB', glyph: 'SUB' },
-      { label: 'MUL', dragKind: 'INSTR_MUL', glyph: 'MUL' },
-      { label: 'DIV', dragKind: 'INSTR_DIV', glyph: 'DIV' },
+      { label: 'MOV', glyph: 'MOV', needsAddress: true, specFactory: (a) => ({ kind: 'COIL', address: a, coilMode: 'NORMAL', instruction: { op: 'MOV', src: 1, dest: 2 } }) },
+      { label: 'CMP', glyph: 'CMP', needsAddress: true, specFactory: (a) => ({ kind: 'COIL', address: a, coilMode: 'NORMAL', instruction: { op: 'CMP', a: 1, b: 2, comparator: 'EQ', resultAddress: a } }) },
+      { label: 'ADD', glyph: 'ADD', needsAddress: true, specFactory: (a) => ({ kind: 'COIL', address: a, coilMode: 'NORMAL', instruction: { op: 'ADD', a: 1, b: 2, dest: 3 } }) },
+      { label: 'SUB', glyph: 'SUB', needsAddress: true, specFactory: (a) => ({ kind: 'COIL', address: a, coilMode: 'NORMAL', instruction: { op: 'SUB', a: 1, b: 2, dest: 3 } }) },
     ],
   },
   {
     title: 'Other',
     items: [
-      { label: 'Memory Contact', dragKind: 'CONTACT_M', glyph: '⊣M⊢' },
-      { label: 'Wire', dragKind: 'WIRE', glyph: '──' },
-      { label: 'Comment', dragKind: 'COMMENT', glyph: '▭' },
+      { label: 'Comment', glyph: '▭', needsAddress: false, specFactory: () => ({ kind: 'COMMENT', text: 'Comment' }) },
     ],
   },
 ];
 
 function CollapsibleGroup({ group }: { group: PaletteGroup }) {
   const [open, setOpen] = useState(true);
+  const armInsert = useGridEditorStore((s) => s.armInsert);
+  const document = useGridEditorStore((s) => s.document);
+  const armedSpec = useGridEditorStore((s) => s.armedSpec);
+
+  function nextAddress(type: AddressType): number {
+    const used = new Set<number>();
+    for (const rungId of document.rungOrder) {
+      for (const id of document.rungs[rungId].elementOrder) {
+        const el = document.rungs[rungId].elements[id];
+        if (el.address?.type === type) used.add(el.address.number);
+      }
+    }
+    for (let n = 1; n <= 26; n++) if (!used.has(n)) return n;
+    return 26;
+  }
+
+  function handlePick(item: PaletteItem) {
+    if (item.needsAddress) {
+      const type = inferAddressType(item);
+      const address = { type, number: nextAddress(type) };
+      armInsert(item.specFactory(address));
+    } else {
+      armInsert(item.specFactory({ type: 'I', number: 1 }));
+    }
+  }
+
+  function inferAddressType(item: PaletteItem): AddressType {
+    if (item.label === 'Memory') return 'M';
+    if (item.label === 'Coil' || item.label === 'SET' || item.label === 'RESET') return 'O';
+    if (item.label === 'TON' || item.label === 'TOF' || item.label === 'TP') return 'TIM';
+    if (item.label === 'CTU' || item.label === 'CTD') return 'CTU';
+    if (item.label.startsWith('MOV') || item.label.startsWith('CMP') || item.label.startsWith('ADD') || item.label.startsWith('SUB')) return 'O';
+    return 'I';
+  }
+
   return (
     <div className="border-b border-border/40 dark:border-border-dark/40">
       <button
@@ -84,27 +115,32 @@ function CollapsibleGroup({ group }: { group: PaletteGroup }) {
       </button>
       {open && (
         <div className="grid grid-cols-1 gap-0.5 px-1 pb-1.5">
-          {group.items.map((item) => (
-            <div
-              key={item.dragKind}
-              draggable
-              onDragStart={(e) => {
-                e.dataTransfer.setData(DRAG_MIME, item.dragKind);
-                e.dataTransfer.effectAllowed = 'copy';
-              }}
-              className="flex cursor-grab select-none items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors hover:bg-muted/40 active:cursor-grabbing dark:hover:bg-white/5"
-              title={`Drag onto the canvas to add ${item.label}`}
-            >
-              <span className="w-12 text-center font-mono text-[11px] text-muted-foreground">{item.glyph}</span>
-              <span className="whitespace-nowrap">{item.label}</span>
-            </div>
-          ))}
+          {group.items.map((item) => {
+            const isArmed = armedSpec !== null && armedSpec.kind === item.specFactory({ type: 'I', number: 0 }).kind;
+            return (
+              <button
+                key={item.label}
+                onClick={() => handlePick(item)}
+                className={`flex cursor-pointer select-none items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors hover:bg-muted/40 dark:hover:bg-white/5 ${
+                  isArmed ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' : ''
+                }`}
+                title={`Click to arm, then click a cell on the canvas to place ${item.label}`}
+              >
+                <span className="w-12 text-center font-mono text-[11px] text-muted-foreground">{item.glyph}</span>
+                <span className="whitespace-nowrap">{item.label}</span>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
 
+/**
+ * Desktop toolbox — grouped component palette. Click a tool to arm it (Insert
+ * Mode), then click a cell on the canvas to place. No drag-and-drop.
+ */
 export function ComponentPalette() {
   return (
     <div className="glass flex w-48 shrink-0 flex-col overflow-y-auto rounded-2xl p-1">
@@ -114,95 +150,13 @@ export function ComponentPalette() {
       {PALETTE_GROUPS.map((g) => (
         <CollapsibleGroup key={g.title} group={g} />
       ))}
+      <div className="px-2 py-2 text-[10px] text-muted-foreground">
+        Click a tool, then click a cell to place.
+      </div>
     </div>
   );
 }
 
-/** Maps a palette drag-kind back into a full NewComponentSpec once we know
- * the drop position and which address number to allocate. */
-export function specForDragKind(
-  dragKind: string,
-  address: Address | undefined,
-  at: { gridX: number; gridY: number }
-): NewComponentSpec | null {
-  switch (dragKind) {
-    case 'CONTACT_NO':
-      return address ? { kind: 'CONTACT', mode: 'NO', address, at } : null;
-    case 'CONTACT_NC':
-      return address ? { kind: 'CONTACT', mode: 'NC', address, at } : null;
-    case 'CONTACT_RISING':
-      return address ? { kind: 'CONTACT', mode: 'RISING_EDGE', address, at } : null;
-    case 'CONTACT_FALLING':
-      return address ? { kind: 'CONTACT', mode: 'FALLING_EDGE', address, at } : null;
-    case 'CONTACT_M':
-      return address ? { kind: 'CONTACT', mode: 'NO', address, at } : null;
-    case 'COIL_O':
-    case 'COIL_M':
-      return address ? { kind: 'COIL', address, at, coilMode: 'NORMAL' } : null;
-    case 'COIL_O_SET':
-      return address ? { kind: 'COIL', address, at, coilMode: 'SET' } : null;
-    case 'COIL_O_RESET':
-      return address ? { kind: 'COIL', address, at, coilMode: 'RESET' } : null;
-    case 'TIMER_TON':
-      return address ? { kind: 'TIMER', address, presetMs: 2000, at, timerType: 'TON' } : null;
-    case 'TIMER_TOF':
-      return address ? { kind: 'TIMER', address, presetMs: 2000, at, timerType: 'TOF' } : null;
-    case 'TIMER_TP':
-      return address ? { kind: 'TIMER', address, presetMs: 2000, at, timerType: 'TP' } : null;
-    case 'COUNTER_CTU':
-      return address ? { kind: 'COUNTER', address, presetCount: 3, at, counterType: 'CTU' } : null;
-    case 'COUNTER_CTD':
-      return address ? { kind: 'COUNTER', address, presetCount: 3, at, counterType: 'CTD' } : null;
-    case 'INSTR_MOV':
-      return address ? { kind: 'COIL', address, at, coilMode: 'NORMAL', instruction: { op: 'MOV', src: 1, dest: 2 } } : null;
-    case 'INSTR_CMP':
-      return address ? { kind: 'COIL', address, at, coilMode: 'NORMAL', instruction: { op: 'CMP', a: 1, b: 2, comparator: 'EQ', resultAddress: address } } : null;
-    case 'INSTR_ADD':
-      return address ? { kind: 'COIL', address, at, coilMode: 'NORMAL', instruction: { op: 'ADD', a: 1, b: 2, dest: 3 } } : null;
-    case 'INSTR_SUB':
-      return address ? { kind: 'COIL', address, at, coilMode: 'NORMAL', instruction: { op: 'SUB', a: 1, b: 2, dest: 3 } } : null;
-    case 'INSTR_MUL':
-      return address ? { kind: 'COIL', address, at, coilMode: 'NORMAL', instruction: { op: 'MUL', a: 1, b: 2, dest: 3 } } : null;
-    case 'INSTR_DIV':
-      return address ? { kind: 'COIL', address, at, coilMode: 'NORMAL', instruction: { op: 'DIV', a: 1, b: 2, dest: 3 } } : null;
-    case 'WIRE':
-      return { kind: 'WIRE', at };
-    case 'COMMENT':
-      return { kind: 'COMMENT', text: 'Comment', at };
-    default:
-      return null;
-  }
-}
-
-/** Which AddressType a given drag-kind should allocate a number from. */
-export function addressTypeForDragKind(dragKind: string): AddressType | null {
-  switch (dragKind) {
-    case 'CONTACT_NO':
-    case 'CONTACT_NC':
-    case 'CONTACT_RISING':
-    case 'CONTACT_FALLING':
-      return 'I';
-    case 'CONTACT_M':
-    case 'COIL_M':
-      return 'M';
-    case 'COIL_O':
-    case 'COIL_O_SET':
-    case 'COIL_O_RESET':
-    case 'INSTR_MOV':
-    case 'INSTR_CMP':
-    case 'INSTR_ADD':
-    case 'INSTR_SUB':
-    case 'INSTR_MUL':
-    case 'INSTR_DIV':
-      return 'O';
-    case 'TIMER_TON':
-    case 'TIMER_TOF':
-    case 'TIMER_TP':
-      return 'TIM';
-    case 'COUNTER_CTU':
-    case 'COUNTER_CTD':
-      return 'CTU';
-    default:
-      return null;
-  }
-}
+// Re-export for mobile sheet
+export type { PaletteItem, PaletteGroup };
+export { PALETTE_GROUPS };
