@@ -1,6 +1,8 @@
 import type { Address } from './address';
 import type { InstructionOp } from './instruction';
 
+export type { Address } from './address';
+
 // ─── Ladder JSON Structure ───────────────────────────────────────────────
 // Design goals (see src/simulator/ARCHITECTURE.md for the full rationale):
 //   1. Series is just a chain of `connectsTo` references.

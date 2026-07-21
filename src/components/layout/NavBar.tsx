@@ -8,10 +8,10 @@ import { cn } from '@/utils/cn';
 // have routes from Phase 1 but no nav entry yet — added when their UI is built.
 const NAV_ITEMS = [
   { to: '/', label: 'Home', icon: Home, end: true },
-  { to: '/simulator', label: 'Simulator', icon: Cpu },
-  { to: '/quiz', label: 'Quiz', icon: ListChecks },
-  { to: '/profile', label: 'Profile', icon: User },
-] as const;
+  { to: '/simulator', label: 'Simulator', icon: Cpu, end: false },
+  { to: '/quiz', label: 'Quiz', icon: ListChecks, end: false },
+  { to: '/profile', label: 'Profile', icon: User, end: false },
+];
 
 /** Desktop: fixed left rail. Mobile: fixed bottom bar. Same data, two layouts. */
 export function SidebarNav() {

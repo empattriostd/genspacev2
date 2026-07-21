@@ -1,5 +1,4 @@
 import type { InstructionOp } from '@/simulator/types/instruction';
-import type { PlcState } from '@/simulator/types/plcState';
 
 // 16-bit signed integer range — matches Omron CX-Programmer's D-register
 // word size. "Register Overflow" (from the Phase 5.4 validation brief)
