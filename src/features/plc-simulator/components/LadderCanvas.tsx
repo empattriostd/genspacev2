@@ -37,6 +37,10 @@ interface LadderCanvasProps {
   isSimulating: boolean;
   onAnchorActionDone?: () => void;
   onError?: (message: string) => void;
+  /** Mobile tap-to-place: when a palette tool is armed, tapping the canvas
+   * places the component at the tapped world position. */
+  pendingPlacementKind?: string | null;
+  onCanvasTapPlace?: (worldX: number, worldY: number) => void;
 }
 
 /**
@@ -52,7 +56,14 @@ interface LadderCanvasProps {
  * - Branch tool: two-click flow creates parallel paths with auto-wired
  *   vertical and horizontal connections.
  */
-export function LadderCanvas({ interactionMode, isSimulating, onAnchorActionDone, onError }: LadderCanvasProps) {
+export function LadderCanvas({
+  interactionMode,
+  isSimulating,
+  onAnchorActionDone,
+  onError,
+  pendingPlacementKind,
+  onCanvasTapPlace,
+}: LadderCanvasProps) {
   const { ref: containerRef, size } = useElementSize<HTMLDivElement>();
   const stageRef = useRef<Konva.Stage | null>(null);
 
@@ -174,6 +185,15 @@ export function LadderCanvas({ interactionMode, isSimulating, onAnchorActionDone
       const wasClick = !panGesture.current.moved;
       panGesture.current.active = false;
       if (wasClick) {
+        // Mobile tap-to-place: if a palette tool is armed, place at tap
+        if (pendingPlacementKind && onCanvasTapPlace) {
+          const stage = stageRef.current;
+          if (stage) {
+            const worldPos = stage.getRelativePointerPosition();
+            if (worldPos) onCanvasTapPlace(worldPos.x, worldPos.y);
+          }
+          return;
+        }
         clearSelection();
         setMultiSelected(new Set());
       }
